@@ -1,65 +1,58 @@
 import numpy as np
 from collections import OrderedDict
-from itertools import count
-
-from threading import Thread
 
 import theano
 from time import time
 from smartpy.trainers import Status
 
 
-class Trainer(Thread):
-    def __init__(self, model, datasets, optimizer, status=None):
+class Trainer(object):
+    def __init__(self, status=None):
         super(Trainer, self).__init__()
-
-        self.model = model
-        self.datasets = datasets
-        self.optimizer = optimizer
-        self.optimizer.initialize(model, *datasets)
-
         self.status = status if status is not None else Status()
-
+        self.updates = OrderedDict()
         self.stopping_criteria = []
         self.tasks = []
 
-        self.updates = OrderedDict()
+        #self.model = model
+        #self.datasets = datasets
+        #self.optimizer = optimizer
+        #self.optimizer.initialize(model, *datasets)
 
-    def add_stopping_criterion(self, criterion):
+    def train(self, model, loss, dataset):
+        learn = self.optimizer.build_learning_function(extra_updates=self.updates)
+        #theano.printing.pydotprint(learn, '{0}_learn_{1}'.format(self.model.__class__.__name__, theano.config.device), with_ids=True)
+
+        # Only initialize tasks if not resuming
+        if self.status.current_epoch == 0:
+            self._init_tasks()
+
+        # Learning
+        while not any([stopping_criterion.check(self.status) for stopping_criterion in self.stopping_criteria]):
+            self.status.current_epoch += 1
+
+            self._pre_epoch_tasks()
+            starttime = time()
+
+            for no_update in xrange(1, self.optimizer.nb_updates_per_epoch+1):
+                self.status.relative_update = no_update
+                self.status.current_update += 1
+                self._pre_update_tasks()
+                learn(no_update-1)
+                self._post_update_tasks()
+
+            self.status.training_time += time() - starttime
+            self._post_epoch_tasks()
+
+        self._finished_tasks()
+        self.status.done = True
+
+    def append_stopping_criterion(self, criterion):
         self.stopping_criteria.append(criterion)
 
-    def add_task(self, task):
+    def append_task(self, task):
         self.updates.update(task.updates)
         self.tasks.append(task)
-
-    def track_variable(self, var, shape, name=""):
-        var_shared = theano.shared(np.zeros(shape, dtype=theano.config.floatX), name=name)
-        self.updates[var_shared] = var
-        return var_shared
-
-    def _init(self):
-        for task in self.tasks:
-            task.init(self.status)
-
-    def _pre_epoch(self):
-        for task in self.tasks:
-            task.pre_epoch(self.status)
-
-    def _pre_update(self):
-        for task in self.tasks:
-            task.pre_update(self.status)
-
-    def _post_update(self):
-        for task in self.tasks:
-            task.post_update(self.status)
-
-    def _post_epoch(self):
-        for task in self.tasks:
-            task.post_epoch(self.status)
-
-    def _finished(self):
-        for task in self.tasks:
-            task.finished(self.status)
 
     def save(self, savedir="./"):
         self.status.save(savedir)
@@ -71,30 +64,26 @@ class Trainer(Thread):
         self.optimizer.load(loaddir)
         self.model.load(loaddir)
 
-    def run(self):
-        learn = self.optimizer.build_learning_function(extra_updates=self.updates)
-        #theano.printing.pydotprint(learn, '{0}_learn_{1}'.format(self.model.__class__.__name__, theano.config.device), with_ids=True)
+    def _init_tasks(self):
+        for task in self.tasks:
+            task.init(self.status)
 
-        # Only do init if not resuming
-        if self.status.current_epoch == 0:
-            self._init()
+    def _pre_epoch_tasks(self):
+        for task in self.tasks:
+            task.pre_epoch(self.status)
 
-        # Learning
-        while not any([stopping_criterion.check(self.status) for stopping_criterion in self.stopping_criteria]):
-            self.status.current_epoch += 1
+    def _pre_update_tasks(self):
+        for task in self.tasks:
+            task.pre_update(self.status)
 
-            self._pre_epoch()
-            starttime = time()
+    def _post_update_tasks(self):
+        for task in self.tasks:
+            task.post_update(self.status)
 
-            for no_update in xrange(1, self.optimizer.nb_updates_per_epoch+1):
-                self.status.relative_update = no_update
-                self.status.current_update += 1
-                self._pre_update()
-                learn(no_update-1)
-                self._post_update()
+    def _post_epoch_tasks(self):
+        for task in self.tasks:
+            task.post_epoch(self.status)
 
-            self.status.training_time += time() - starttime
-            self._post_epoch()
-
-        self._finished()
-        self.status.done = True
+    def _finished_tasks(self):
+        for task in self.tasks:
+            task.finished(self.status)

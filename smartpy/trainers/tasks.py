@@ -6,6 +6,7 @@ import numpy as np
 from collections import OrderedDict
 from time import time
 
+import theano
 from smartpy.misc import utils
 
 
@@ -17,6 +18,11 @@ class StoppingCriterion(object):
 class Task(object):
     def __init__(self):
         self.updates = OrderedDict()
+
+    def track_variable(self, var, shape, name=""):
+        var_shared = theano.shared(np.zeros(shape, dtype=var.dtype), name=name)
+        self.updates[var_shared] = var
+        return var_shared
 
     def init(self, status):
         pass
@@ -251,7 +257,7 @@ class EarlyStopping(Task, StoppingCriterion):
     def check(self, status):
         objective = self.objective.view(status)
         if objective + self.eps < status.extra['best_objective']:
-            print "Best epoch {} ({})".format(status.current_epoch, objective)
+            print "Best epoch {} ({:.20f})".format(status.current_epoch, objective)
             status.extra['best_objective'] = float(objective)
             status.extra['best_epoch'] = status.current_epoch
 

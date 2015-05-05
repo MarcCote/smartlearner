@@ -8,8 +8,8 @@ from smartpy.update_rules import UpdateRule
 
 class LearningRate(UpdateRule):
     """ LearningRate(self, lr, dc=0.) """
-    __hyperparams__ = {'lr': float, 'dc': float}
-    __optional__ = ['dc']
+    __hyperparams_types__ = {'lr': float, 'dc': float}
+    #__optional__ = ['dc']
 
     def __init__(self, lr, dc=0.):
         """
@@ -34,7 +34,7 @@ class LearningRate(UpdateRule):
 
         for param, gparam in gradients.items():
             lr = sharedX(self.lr * np.ones_like(param.get_value()), name='lr_' + param.name)
-            self.parameters[lr.name] = lr
+            self.params[lr.name] = lr
 
             if self.dc != 0.:
                 # Decrease the learning rate by a factor of `dc` after each update.
