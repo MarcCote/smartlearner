@@ -177,36 +177,44 @@ def main():
 
     with utils.Timer("Augmenting dataset"):
         trainset = dataset.trainset
-        sample_file = pjoin(data_dir, "samples_{}.npz".format(args.seed))
-        if not os.path.isfile(sample_file):
+        samples_file = pjoin(data_dir, "samples_{}.npz".format(args.seed))
+        if not os.path.isfile(samples_file):
             nade = NADE.create(args.nade)
             if args.sampling_type == "conditional":
                 sample = nade.build_conditional_sampling_function(seed=args.seed)
                 samples = sample(trainset.inputs, alpha=args.alpha)
+                targets = trainset.inputs
             elif args.sampling_type == "independent":
                 sample = nade.build_independent_sampling_function(seed=args.seed)
                 samples = sample(trainset.inputs)
+                targets = trainset.inputs
             else:
                 raise ValueError("Unknown type of sampling: {}".format(args.sampling_type))
 
             del nade  # Free unnecessary memory
-            np.savez(sample_file, samples=samples, targets=trainset.inputs)
+
+            # Load previous NADE samples, if any.
+            nade_samples_file = pjoin(args.nade, "samples_{}.npz".format(args.seed))
+            if os.path.isfile(nade_samples_file):
+                nade_samples = np.load(nade_samples_file)
+                samples = np.r_[nade_samples["samples"], samples]
+                targets = np.r_[nade_samples["targets"], targets]
+
+            np.savez(samples_file,
+                     samples=samples.astype(theano.config.floatX),
+                     targets=targets.astype(theano.config.floatX))
         else:
-            samples = np.load(sample_file)["samples"]
+            samples_data = np.load(samples_file)
+            samples = samples_data["samples"]
+            targets = samples_data["targets"]
 
-        inputs = np.zeros((2*len(trainset), trainset.input_shape[0]), dtype=theano.config.floatX)
-        targets = np.zeros((2*len(trainset), trainset.input_shape[0]), dtype=theano.config.floatX)
-        inputs[::2] = trainset.inputs
-        targets[::2] = trainset.inputs
-        inputs[1::2] = samples[::-1]
-        targets[1::2] = trainset.inputs[::-1]
-        augmented_trainset = Dataset(name="augmented_trainset", inputs=inputs, targets=targets)
+        inputs = (np.r_[trainset.inputs, samples]).astype(theano.config.floatX)
+        targets = (np.r_[trainset.inputs, targets]).astype(theano.config.floatX)
 
-        # import pylab as plt
-        # from mlpython.misc.utils import show_samples
-        # show_samples(trainset.inputs, title="Examples")
-        # show_samples(samples, title="Conditional samples with alpha={}".format(args.alpha))
-        # plt.show()
+        samples_suffling_rng = np.random.RandomState(args.seed)
+        indices = np.arange(len(inputs))
+        samples_suffling_rng.shuffle(indices)
+        augmented_trainset = Dataset(name="augmented_trainset", inputs=inputs[indices], targets=targets[indices])
 
     with utils.Timer("Building loss function"):
         def mean_nll_loss(input, target):
