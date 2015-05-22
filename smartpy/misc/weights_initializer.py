@@ -10,7 +10,15 @@ class WeightsInitializer(object):
         self.rng = np.random.mtrand.RandomState(random_seed)
 
     def _init_range(self, dim):
-        return np.sqrt(6. / (dim[0] + dim[1]))
+        if len(dim) == 2:
+            return np.sqrt(6. / (dim[0] + dim[1]))
+        elif len(dim) == 4:
+            # For convnet (see http://deeplearning.net/tutorial/lenet.html)
+            fan_in = np.prod(dim[1:])
+            fan_out = dim[0] * np.prod(dim[2:])
+            return np.sqrt(6. / (fan_in + fan_out))
+        else:
+            raise ValueError("Don't know what to do in this case!")
 
     def uniform(self, dim):
         init_range = self._init_range(dim)
@@ -35,7 +43,7 @@ class WeightsInitializer(object):
 def factory(**hyperparams):
     """ Gets a weights initialization function from `hyperparams`. """
 
-    weights_initializer = WeightsInitializer(hyperparams.get("seed", 1234))
+    weights_initializer = WeightsInitializer(hyperparams.get("initialization_seed", 1234))
 
     if "weights_initialization" not in hyperparams:
         raise ValueError("Hyperparameter 'weights_initialization' is mandatory ({}).".format(",".join(WEIGHTS_INITIALIZERS)))

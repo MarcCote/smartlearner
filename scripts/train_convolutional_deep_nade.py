@@ -23,6 +23,10 @@ from smartpy.misc.utils import ACTIVATION_FUNCTIONS
 from smartpy.trainers.trainer import Trainer
 from smartpy.trainers import tasks
 
+from smartpy.models.convolutional_deep_nade import ConvolutionalDeepNADE
+from smartpy.models.convolutional_deep_nade import ChangeOrderingTask
+from smartpy.models.convolutional_deep_nade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
+
 
 DATASETS = ['binarized_mnist']
 
@@ -42,9 +46,13 @@ def build_launch_experiment_argsparser(subparser):
 
     # NADE-like's hyperparameters
     model = p.add_argument_group("Convolutional Deep NADE")
-    model.add_argument('--hidden_size', type=int, help='number of hidden neurons.', default=20)
+    model.add_argument('--nb_kernels', type=int, help='number of kernel/filter for the convolutional layer.', default=20)
+    model.add_argument('--kernel_shape', type=int, nargs=2, help='height and width of kernel/filter.', default=(5, 5))
+    model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
+
     model.add_argument('--hidden_activation', type=str, help="Activation functions: {}".format(ACTIVATION_FUNCTIONS.keys()), choices=ACTIVATION_FUNCTIONS.keys(), default=ACTIVATION_FUNCTIONS.keys()[0])
     model.add_argument('--weights_initialization', type=str, help='which type of initialization to use when creating weights [{0}].'.format(", ".join(WEIGHTS_INITIALIZERS)), default=WEIGHTS_INITIALIZERS[0], choices=WEIGHTS_INITIALIZERS)
+    model.add_argument('--initialization_seed', type=int, help='seed used to generate random numbers. Default=1234', default=1234)
 
     # Update rules hyperparameters
     utils.create_argument_group_from_hyperparams_registry(p, update_rules.UpdateRule.registry, dest="update_rules", title="Update rules")
@@ -64,7 +72,6 @@ def build_launch_experiment_argsparser(subparser):
     # General parameters (optional)
     p.add_argument('--name', type=str, help='name of the experiment.')
     p.add_argument('--out', type=str, help='directory that will contain the experiment.', default="./")
-    p.add_argument('--seed', type=int, help='seed used to generate random numbers. Default=1234', default=1234)
 
     p.add_argument('-v', '--verbose', action='store_true', help='produce verbose output')
     p.add_argument('-f', '--force',  action='store_true', help='permit overwriting')
@@ -143,11 +150,18 @@ def main():
     with utils.Timer("Loading dataset"):
         dataset = Dataset(args.dataset)
 
+        if 'mnist' in args.dataset:
+            # TODO: use the new smartpy framework once merged.
+            dataset.image_shape = (28, 28)
+            dataset.nb_channels = 1
+
     with utils.Timer("Building model"):
-        from smartpy.models.convolutional_deep_nade import ConvolutionalDeepNADE
-        model = ConvolutionalDeepNADE(input_size=dataset.input_size,
-                                      hidden_size=args.hidden_size,
-                                      hidden_activation=args.hidden_activation
+        model = ConvolutionalDeepNADE(image_shape=dataset.image_shape,
+                                      nb_channels=dataset.nb_channels,
+                                      nb_kernels=args.nb_kernels,
+                                      kernel_shape=tuple(args.kernel_shape),
+                                      hidden_activation=args.hidden_activation,
+                                      consider_mask_as_channel=True
                                       )
 
         from smartpy.misc import weights_initializer
@@ -155,28 +169,31 @@ def main():
         model.initialize(weights_initialization_method)
 
     with utils.Timer("Building optimizer"):
-        optimizer = optimizers.factory(args.optimizer, loss=model.mean_nll_loss, **vars(args))
+        optimizer = optimizers.factory(args.optimizer, loss=model.mean_nll_estimate_loss, **vars(args))
         optimizer.add_update_rule(*args.update_rules)
 
     with utils.Timer("Building trainer"):
-        trainer = Trainer(model=model, datasets=[dataset.trainset_shared]*2, optimizer=optimizer)
+        trainer = Trainer(model=model, datasets=[dataset.trainset_shared], optimizer=optimizer)
+
+        # Add a task that changed the ordering mask
+        trainer.add_task(ChangeOrderingTask(model, args.batch_size, args.ordering_seed))
 
         # Print time for one epoch
         trainer.add_task(tasks.PrintEpochDuration())
         trainer.add_task(tasks.AverageObjective(trainer))
 
-        nll_valid = tasks.EvaluateNLL(model.get_nll, [dataset.validset_shared]*2, batch_size=100)
+        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, batch_size=args.batch_size)
         trainer.add_task(tasks.Print(nll_valid.mean, msg="Average NLL on the validset: {0}"))
 
         # Add stopping criteria
         if args.max_epoch is not None:
             # Stop when max number of epochs is reached.
-            print "Will train Convoluational Deep NADE for a total of {1} epochs.".format(args.max_epoch)
+            print "Will train Convoluational Deep NADE for a total of {0} epochs.".format(args.max_epoch)
             trainer.add_stopping_criterion(tasks.MaxEpochStopping(args.max_epoch))
 
         # Do early stopping bywatching the average NLL on the validset.
         if args.lookahead is not None:
-            print "Will train Convoluational Deep NADE using early stopping with a lookahead of {1} epochs.".format(args.lookahead)
+            print "Will train Convoluational Deep NADE using early stopping with a lookahead of {0} epochs.".format(args.lookahead)
             save_task = tasks.SaveTraining(trainer, savedir=data_dir)
             early_stopping = tasks.EarlyStopping(nll_valid.mean, args.lookahead, save_task, eps=args.lookahead_eps)
             trainer.add_stopping_criterion(early_stopping)
@@ -200,15 +217,15 @@ def main():
 
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
-        nll_train = tasks.EvaluateNLL(model.get_nll, [dataset.trainset_shared]*2, batch_size=100)
-        nll_valid = tasks.EvaluateNLL(model.get_nll, [dataset.validset_shared]*2, batch_size=100)
-        nll_test = tasks.EvaluateNLL(model.get_nll, [dataset.testset_shared]*2, batch_size=100)
+        nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, batch_size=args.batch_size)
+        nll_valid = EvaluateDeepNadeNLL(model, dataset.validset_shared, batch_size=args.batch_size)
+        nll_test = EvaluateDeepNadeNLL(model, dataset.testset_shared, batch_size=args.batch_size)
 
         from collections import OrderedDict
         log_entry = OrderedDict()
         log_entry["Hidden Size"] = model.hyperparams["hidden_size"]
         log_entry["Activation Function"] = model.hyperparams["hidden_activation"]
-        log_entry["Initialization Seed"] = args.seed
+        log_entry["Initialization Seed"] = args.initialization_seed
         log_entry["Tied Weights"] = model.hyperparams["tied_weights"]
         log_entry["Best Epoch"] = trainer.status.extra["best_epoch"] if args.lookahead else trainer.status.current_epoch
         log_entry["Max Epoch"] = trainer.stopping_criteria[0].nb_epochs_max if args.max_epoch else ''
@@ -224,7 +241,7 @@ def main():
         log_entry["Update Rule"] = trainer.optimizer.update_rules[0].__class__.__name__
         log_entry["Learning Rate"] = trainer.optimizer.update_rules[0].lr
         log_entry["Weights Initialization"] = args.weights_initialization
-        log_entry["Training NLL"] = nll_train.mean
+        log_entry["Training NLL - Estimate"] = nll_train.mean
         log_entry["Training NLL std"] = nll_train.std
         log_entry["Validation NLL"] = nll_valid.mean
         log_entry["Validation NLL std"] = nll_valid.std
@@ -234,7 +251,7 @@ def main():
         log_entry["Experiment"] = os.path.abspath(data_dir)
 
         formatting = {}
-        formatting["Training NLL"] = "{:.6f}"
+        formatting["Training NLL - Estimate"] = "{:.6f}"
         formatting["Training NLL std"] = "{:.6f}"
         formatting["Validation NLL"] = "{:.6f}"
         formatting["Validation NLL std"] = "{:.6f}"
