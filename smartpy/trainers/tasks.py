@@ -191,7 +191,7 @@ class AverageObjective(Task):
         self.values.append(self.objective.get_value())
 
     def post_epoch(self, status):
-        print "Average objective: {}".format(np.mean(self.values))
+        print "Average training objective: {}".format(np.mean(self.values))
 
 
 class EvaluateNLL(Evaluate):

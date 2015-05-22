@@ -49,6 +49,7 @@ def build_launch_experiment_argsparser(subparser):
     model.add_argument('--nb_kernels', type=int, help='number of kernel/filter for the convolutional layer.', default=20)
     model.add_argument('--kernel_shape', type=int, nargs=2, help='height and width of kernel/filter.', default=(5, 5))
     model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
+    model.add_argument('--consider_mask_as_channel', action='store_true', help='consider the ordering mask as a another channel in the convolutional layer.')
 
     model.add_argument('--hidden_activation', type=str, help="Activation functions: {}".format(ACTIVATION_FUNCTIONS.keys()), choices=ACTIVATION_FUNCTIONS.keys(), default=ACTIVATION_FUNCTIONS.keys()[0])
     model.add_argument('--weights_initialization', type=str, help='which type of initialization to use when creating weights [{0}].'.format(", ".join(WEIGHTS_INITIALIZERS)), default=WEIGHTS_INITIALIZERS[0], choices=WEIGHTS_INITIALIZERS)
@@ -161,7 +162,7 @@ def main():
                                       nb_kernels=args.nb_kernels,
                                       kernel_shape=tuple(args.kernel_shape),
                                       hidden_activation=args.hidden_activation,
-                                      consider_mask_as_channel=True
+                                      consider_mask_as_channel=args.consider_mask_as_channel
                                       )
 
         from smartpy.misc import weights_initializer
@@ -183,7 +184,7 @@ def main():
         trainer.add_task(tasks.AverageObjective(trainer))
 
         nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, batch_size=args.batch_size)
-        trainer.add_task(tasks.Print(nll_valid.mean, msg="Average NLL on the validset: {0}"))
+        trainer.add_task(tasks.Print(nll_valid.mean, msg="Average NLL estimate on the validset: {0}"))
 
         # Add stopping criteria
         if args.max_epoch is not None:
@@ -223,10 +224,11 @@ def main():
 
         from collections import OrderedDict
         log_entry = OrderedDict()
-        log_entry["Hidden Size"] = model.hyperparams["hidden_size"]
+        log_entry["Nb. kernels"] = model.hyperparams["nb_kernels"]
+        log_entry["Kernel Shape"] = model.hyperparams["kernel_shape"]
+        log_entry["Mask as channel"] = model.hyperparams["consider_mask_as_channel"]
         log_entry["Activation Function"] = model.hyperparams["hidden_activation"]
         log_entry["Initialization Seed"] = args.initialization_seed
-        log_entry["Tied Weights"] = model.hyperparams["tied_weights"]
         log_entry["Best Epoch"] = trainer.status.extra["best_epoch"] if args.lookahead else trainer.status.current_epoch
         log_entry["Max Epoch"] = trainer.stopping_criteria[0].nb_epochs_max if args.max_epoch else ''
 

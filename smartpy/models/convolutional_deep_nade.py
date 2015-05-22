@@ -108,7 +108,11 @@ class ConvolutionalDeepNADE(Model):
         input_masked = input * ordering
 
         if self.consider_mask_as_channel:
-            input_masked = T.concatenate([input_masked, ordering], axis=1)
+            if ordering.ndim == 1:
+                # TODO: changed this hack
+                input_masked = T.concatenate([input_masked, T.ones_like(input_masked)*ordering], axis=1)
+            else:
+                input_masked = T.concatenate([input_masked, ordering], axis=1)
 
         # Hack: input_masked is a 2D matrix instead of a 4D tensor, but we have all the information to fix that.
         input_masked = input_masked.reshape((-1, self.nb_channels) + self.image_shape)
@@ -263,7 +267,7 @@ class EvaluateDeepNadeNLL(Evaluate):
         # $o_{<d}$: indices of the d-1 first dimensions in the ordering.
         mask_o_lt_d = T.vector('mask_o_lt_d')
 
-        _, pre_output = conv_nade._fprop(input, mask_o_lt_d, return_output_preactivation=True)
+        _, pre_output = conv_nade.fprop(input, mask_o_lt_d, return_output_preactivation=True)
         cross_entropies = T.nnet.softplus(-input * pre_output + (1 - input) * pre_output)
 
         # Keep only $-log p(x_d | x_{<d}, o_{<d}, o_d)$
@@ -291,10 +295,8 @@ class EvaluateDeepNadeNLL(Evaluate):
                 masks_o_lt_d.set_value(o_lt_d)
 
                 for i in range(nb_batches):
-                    print i
                     nlls_d = []
                     for d in range(D):
-                        print d
                         nlls_d.append(compute_nll(i, d))
 
                     nlls[i*batch_size:(i+1)*batch_size] += np.sum(np.vstack(nlls_d).T, axis=1)
