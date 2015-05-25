@@ -11,7 +11,7 @@ from smartpy.misc.utils import ACTIVATION_FUNCTIONS
 from smartpy.misc.weights_initializer import WeightsInitializer
 
 
-class ConvolutionalDeepNADE(Model):
+class DeepConvolutionalDeepNADE(Model):
     """
     Parameters
     ----------
@@ -31,19 +31,23 @@ class ConvolutionalDeepNADE(Model):
     def __init__(self,
                  image_shape,
                  nb_channels,
-                 kernel_shape,
-                 nb_kernels,
+                 list_of_kernel_shapes,
+                 list_of_nb_kernels,
+                 list_of_border_modes,
                  hidden_activation="sigmoid",
                  ordering_seed=None,
                  consider_mask_as_channel=False,
                  *args, **kwargs):
-        super(ConvolutionalDeepNADE, self).__init__(*args, **kwargs)
+        super(DeepConvolutionalDeepNADE, self).__init__(*args, **kwargs)
+
+        assert len(list_of_nb_kernels) == len(list_of_kernel_shapes)
 
         # Set the hyperparameters of the model (must be JSON serializable)
         self.hyperparams['image_shape'] = image_shape
         self.hyperparams['nb_channels'] = nb_channels
-        self.hyperparams['kernel_shape'] = kernel_shape
-        self.hyperparams['nb_kernels'] = nb_kernels
+        self.hyperparams['list_of_kernel_shapes'] = list_of_kernel_shapes
+        self.hyperparams['list_of_nb_kernels'] = list_of_nb_kernels
+        self.hyperparams['list_of_border_modes'] = list_of_border_modes
         self.hyperparams['hidden_activation'] = hidden_activation
         self.hyperparams['ordering_seed'] = ordering_seed
         self.hyperparams['consider_mask_as_channel'] = consider_mask_as_channel
@@ -51,33 +55,48 @@ class ConvolutionalDeepNADE(Model):
         # Internal attributes of the model
         self.image_shape = image_shape
         self.nb_channels = nb_channels
-        self.kernel_shape = kernel_shape
-        self.nb_kernels = nb_kernels
+        self.list_of_kernel_shapes = list_of_kernel_shapes
+        self.list_of_nb_kernels = list_of_nb_kernels
+        self.list_of_border_modes = list_of_border_modes
         self.hidden_activation = ACTIVATION_FUNCTIONS[hidden_activation]
         self.ordering_seed = ordering_seed
         self.consider_mask_as_channel = consider_mask_as_channel
+        self.kernels = []
+        self.kernel_biases = []
+
+        # Add a final output convolutional layer, if needed.
+        output_kernel_shape = np.array((0, 0))
+        for kernel_shape, border_mode in zip(self.list_of_kernel_shapes, self.list_of_border_modes):
+            if border_mode == "valid":
+                output_kernel_shape -= np.array(kernel_shape) - 1
+            elif border_mode == "full":
+                output_kernel_shape += np.array(kernel_shape) - 1
+            else:
+                raise ValueError("Unknown border mode: {}".format(border_mode))
+
+        if np.any(output_kernel_shape):
+            self.list_of_kernel_shapes += [tuple(np.abs(output_kernel_shape)+1)]
+            #self.list_of_nb_kernels += [int(np.prod(self.image_shape))]
+            self.list_of_nb_kernels += [1]
+            self.list_of_border_modes += ['valid'] if output_kernel_shape.sum() > 0 else ['full']
 
         if consider_mask_as_channel:
             self.nb_channels += 1
 
-        # Parameters of the convolutional layer (i.e. kernel weights and biases).
-        W_shape = (self.nb_kernels, self.nb_channels) + self.kernel_shape
-        self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='W', borrow=True)
-        self.bhid = theano.shared(value=np.zeros(self.nb_kernels, dtype=theano.config.floatX), name='bhid', borrow=True)
+        nb_input_features = self.nb_channels
 
-        # Parameters of the fully-connected layer (i.e. layer weights and biases).
-        input_size = np.prod(image_shape)
-        hidden_size = self.nb_kernels * np.prod(np.array(self.image_shape) - np.array(self.kernel_shape) + 1)
-        self.V = theano.shared(value=np.zeros((input_size, hidden_size), dtype=theano.config.floatX), name='V', borrow=True)
-        self.bvis = theano.shared(value=np.zeros(input_size, dtype=theano.config.floatX), name='bvis', borrow=True)
+        # Parameters of the convolutional layers (i.e. kernels weights and biases).
+        for layer_id, (nb_kernels, kernel_shape) in enumerate(zip(self.list_of_nb_kernels, self.list_of_kernel_shapes)):
+            W_shape = (nb_kernels, nb_input_features) + kernel_shape
+            W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='W' + str(layer_id), borrow=True)
+            bhid = theano.shared(value=np.zeros(nb_kernels, dtype=theano.config.floatX), name='bhid' + str(layer_id), borrow=True)
+            nb_input_features = nb_kernels
 
-        # Set parameters that will be used in theano.grad
-        self.parameters.extend([self.W, self.bhid, self.V, self.bvis])
-
-        # Hack: ordering_mask will be modified by a training task in the trainer. (see the training scripts).
-        # This hack is necessary as the random generator of Theano does not support
-        # functions randint nor shuffle. Its shape will be (batch_size, image_height, image_width.)
-        #self.ordering_mask = theano.shared(np.array([], ndmin=2, dtype=theano.config.floatX), name='ordering_mask', borrow=True)
+            # Set parameters that will be used in theano.grad
+            self.parameters.extend([W, bhid])
+            self.kernels.append(W)
+            self.kernel_biases.append(bhid)
+            print W_shape, list_of_border_modes[layer_id]
 
     def initialize(self, weights_initialization=None):
         """ Initialize weights of the model.
@@ -89,8 +108,8 @@ class ConvolutionalDeepNADE(Model):
         if weights_initialization is None:
             weights_initialization = WeightsInitializer().uniform
 
-        self.W.set_value(weights_initialization(self.W.get_value().shape))
-        self.V.set_value(weights_initialization(self.V.get_value().shape))
+        for kernel in self.kernels:
+            kernel.set_value(weights_initialization(kernel.get_value().shape))
 
     def fprop(self, input, mask_o_lt_d, return_output_preactivation=False):
         """ Returns the theano graph that computes the fprop given an `input` and an `ordering`.
@@ -118,18 +137,15 @@ class ConvolutionalDeepNADE(Model):
         # Hack: input_masked is a 2D matrix instead of a 4D tensor, but we have all the information to fix that.
         input_masked = input_masked.reshape((-1, self.nb_channels) + self.image_shape)
 
-        pre_conv_out = conv.conv2d(input_masked,
-                                   filters=self.W,
-                                   filter_shape=(self.nb_kernels, self.nb_channels) + self.kernel_shape,
-                                   image_shape=(None, self.nb_channels) + self.image_shape)
-        conv_out = self.hidden_activation(pre_conv_out + self.bhid.dimshuffle('x', 0, 'x', 'x'))
+        out_previous_layer = input_masked
+        for W, bhid, border_mode in zip(self.kernels, self.kernel_biases, self.list_of_border_modes):
+            conv_out = conv.conv2d(out_previous_layer, filters=W, border_mode=border_mode)
+            pre_output = conv_out + bhid.dimshuffle('x', 0, 'x', 'x')
+            out_previous_layer = self.hidden_activation(pre_output)
 
-        # The fully-connected layer operates on 2D matrices of shape (batch_size, num_pixels)
         # This will generate a matrix of shape (batch_size, nb_kernels * kernel_height * kernel_width).
-        conv_out_flatten = conv_out.flatten(2)
-
-        pre_output = T.dot(conv_out_flatten, self.V.T) + self.bvis
-        output = T.nnet.sigmoid(pre_output)
+        pre_output = pre_output.flatten(2)
+        output = T.nnet.sigmoid(pre_output)  # Force use of sigmoid for the output layer
 
         if return_output_preactivation:
             return output, pre_output

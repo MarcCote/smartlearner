@@ -23,7 +23,7 @@ from smartpy.misc.utils import ACTIVATION_FUNCTIONS
 from smartpy.trainers.trainer import Trainer
 from smartpy.trainers import tasks
 
-from smartpy.models.convolutional_deep_nade import ConvolutionalDeepNADE
+from smartpy.models.deep_convolutional_deep_nade import DeepConvolutionalDeepNADE
 from smartpy.models.convolutional_deep_nade import DeepNadeOrderingTask
 from smartpy.models.convolutional_deep_nade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
 
@@ -46,8 +46,9 @@ def build_launch_experiment_argsparser(subparser):
 
     # NADE-like's hyperparameters
     model = p.add_argument_group("Convolutional Deep NADE")
-    model.add_argument('--nb_kernels', type=int, help='number of kernel/filter for the convolutional layer.', default=20)
-    model.add_argument('--kernel_shape', type=int, nargs=2, help='height and width of kernel/filter.', default=(5, 5))
+    model.add_argument('--nb_kernels', type=int, action="append", help='number of kernel/filter for the convolutional layer.', required=True, dest="list_of_nb_kernels")
+    model.add_argument('--kernel_shape', type=int, nargs=2, action="append", help='height and width of kernel/filter.', required=True, dest="list_of_kernel_shapes")
+    model.add_argument('--border_mode', type=str, action="append", help='border mode for convolution: valid or full.', required=True, dest="list_of_border_modes")
     model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
     model.add_argument('--consider_mask_as_channel', action='store_true', help='consider the ordering mask as a another channel in the convolutional layer.')
 
@@ -108,6 +109,7 @@ def buildArgsParser():
 def main():
     parser = buildArgsParser()
     args = parser.parse_args()
+    print args
 
     if args.subcommand == "launch":
         out_dir = os.path.abspath(args.out)
@@ -157,13 +159,14 @@ def main():
             dataset.nb_channels = 1
 
     with utils.Timer("Building model"):
-        model = ConvolutionalDeepNADE(image_shape=dataset.image_shape,
-                                      nb_channels=dataset.nb_channels,
-                                      nb_kernels=args.nb_kernels,
-                                      kernel_shape=tuple(args.kernel_shape),
-                                      hidden_activation=args.hidden_activation,
-                                      consider_mask_as_channel=args.consider_mask_as_channel
-                                      )
+        model = DeepConvolutionalDeepNADE(image_shape=dataset.image_shape,
+                                          nb_channels=dataset.nb_channels,
+                                          list_of_nb_kernels=args.list_of_nb_kernels,
+                                          list_of_kernel_shapes=map(tuple, args.list_of_kernel_shapes),
+                                          list_of_border_modes=args.list_of_border_modes,
+                                          hidden_activation=args.hidden_activation,
+                                          consider_mask_as_channel=args.consider_mask_as_channel
+                                          )
 
         from smartpy.misc import weights_initializer
         weights_initialization_method = weights_initializer.factory(**vars(args))
@@ -212,9 +215,6 @@ def main():
             print "Loading existing trainer..."
             trainer.load(data_dir)
 
-    from ipdb import set_trace as dbg
-    dbg()
-
     with utils.Timer("Training"):
         trainer.run()
         trainer.status.save(savedir=data_dir)
@@ -230,8 +230,9 @@ def main():
 
         from collections import OrderedDict
         log_entry = OrderedDict()
-        log_entry["Nb. kernels"] = model.hyperparams["nb_kernels"]
-        log_entry["Kernel Shape"] = model.hyperparams["kernel_shape"]
+        log_entry["Nb. kernels"] = model.hyperparams["list_of_nb_kernels"]
+        log_entry["Kernel Shapes"] = model.hyperparams["lift_of_kernel_shapes"]
+        log_entry["Border Modes"] = model.hyperparams["lift_of_border_modes"]
         log_entry["Mask as channel"] = model.hyperparams["consider_mask_as_channel"]
         log_entry["Activation Function"] = model.hyperparams["hidden_activation"]
         log_entry["Initialization Seed"] = args.initialization_seed
