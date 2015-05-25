@@ -42,6 +42,10 @@ class DeepConvolutionalDeepNADE(Model):
 
         assert len(list_of_nb_kernels) == len(list_of_kernel_shapes)
 
+        # Just to be sure we have tuples for shapes.
+        image_shape = tuple(image_shape)
+        list_of_kernel_shapes = map(tuple, list_of_kernel_shapes)
+
         # Set the hyperparameters of the model (must be JSON serializable)
         self.hyperparams['image_shape'] = image_shape
         self.hyperparams['nb_channels'] = nb_channels
@@ -97,6 +101,48 @@ class DeepConvolutionalDeepNADE(Model):
             self.kernels.append(W)
             self.kernel_biases.append(bhid)
             print W_shape, list_of_border_modes[layer_id]
+
+    def build_sampling_function(self, seed=None):
+        # Build sampling function
+        from smartpy.misc.utils import Timer
+        from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+        rng = np.random.RandomState(seed)
+        theano_rng = RandomStreams(rng.randint(2**30))
+
+        # Build theano function
+        # $X$: batch of inputs (flatten images)
+        input = T.matrix('input')
+        # $o_d$: index of d-th dimension in the ordering.
+        mask_o_d = T.vector('mask_o_d')
+        # $o_{<d}$: indices of the d-1 first dimensions in the ordering.
+        mask_o_lt_d = T.vector('mask_o_lt_d')
+
+        output = self.fprop(input, mask_o_lt_d)
+        probs = T.sum(output*mask_o_d, axis=1)
+        bits = theano_rng.binomial(p=probs, size=probs.shape, n=1, dtype=theano.config.floatX)
+        sample_bit_plus = theano.function([input, mask_o_d, mask_o_lt_d], bits)
+
+        def _sample(nb_samples, ordering_seed=42):
+            rng = np.random.RandomState(ordering_seed)
+            D = int(np.prod(self.image_shape))
+            ordering = np.arange(D)
+            rng.shuffle(ordering)
+
+            with Timer("Generating {} samples from ConvDeepNADE".format(nb_samples)):
+                o_d = np.zeros((D, D), dtype=theano.config.floatX)
+                o_d[np.arange(D), ordering] = 1
+
+                o_lt_d = np.cumsum(o_d, axis=0)
+                o_lt_d[1:] = o_lt_d[:-1]
+                o_lt_d[0, :] = 0
+
+                samples = np.zeros((nb_samples, D), dtype="float32")
+                for d, bit in enumerate(range(D)):
+                    print d
+                    samples[:, bit] = sample_bit_plus(samples, o_d[d], o_lt_d[d])
+
+                return samples
+        return _sample
 
     def initialize(self, weights_initialization=None):
         """ Initialize weights of the model.
