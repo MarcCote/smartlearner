@@ -221,8 +221,8 @@ def main():
             trainer.load(data_dir)
 
     with utils.Timer("Training"):
-        #trainer.run()
-        #trainer.status.save(savedir=data_dir)
+        trainer.run()
+        trainer.status.save(savedir=data_dir)
 
         if not args.lookahead:
             trainer.save(savedir=data_dir)
@@ -230,14 +230,14 @@ def main():
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
         nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
-        nll_valid = EvaluateDeepNadeNLL(model, dataset.validset_shared, batch_size=1000, nb_orderings=1)
-        nll_test = EvaluateDeepNadeNLL(model, dataset.testset_shared, batch_size=args.batch_size, nb_orderings=1)
+        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, batch_size=args.batch_size, nb_orderings=1)
+        nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, batch_size=args.batch_size, nb_orderings=1)
 
         print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
         print "Training NLL std:", nll_train.std.view(trainer.status)
-        print "Validation NLL:", nll_valid.mean.view(trainer.status)
+        print "Validation NLL - Estimate:", nll_valid.mean.view(trainer.status)
         print "Validation NLL std:", nll_valid.std.view(trainer.status)
-        print "Testing NLL:", nll_test.mean.view(trainer.status)
+        print "Testing NLL - Estimate:", nll_test.mean.view(trainer.status)
         print "Testing NLL std:", nll_test.std.view(trainer.status)
 
         from collections import OrderedDict
@@ -264,9 +264,9 @@ def main():
         log_entry["Weights Initialization"] = args.weights_initialization
         log_entry["Training NLL - Estimate"] = nll_train.mean
         log_entry["Training NLL std"] = nll_train.std
-        log_entry["Validation NLL"] = nll_valid.mean
+        log_entry["Validation NLL - Estimate"] = nll_valid.mean
         log_entry["Validation NLL std"] = nll_valid.std
-        log_entry["Testing NLL"] = nll_test.mean
+        log_entry["Testing NLL - Estimate"] = nll_test.mean
         log_entry["Testing NLL std"] = nll_test.std
         log_entry["Training Time"] = trainer.status.training_time
         log_entry["Experiment"] = os.path.abspath(data_dir)
@@ -274,21 +274,19 @@ def main():
         formatting = {}
         formatting["Training NLL - Estimate"] = "{:.6f}"
         formatting["Training NLL std"] = "{:.6f}"
-        formatting["Validation NLL"] = "{:.6f}"
+        formatting["Validation NLL - Estimate"] = "{:.6f}"
         formatting["Validation NLL std"] = "{:.6f}"
-        formatting["Testing NLL"] = "{:.6f}"
+        formatting["Testing NLL - Estimate"] = "{:.6f}"
         formatting["Testing NLL std"] = "{:.6f}"
         formatting["Training Time"] = "{:.4f}"
 
-        from smartpy.trainers import Status
-        status = Status()
         logging_task = tasks.LogResultCSV("results_{}_{}.csv".format("ConvDeepNADE", dataset.name), log_entry, formatting)
-        logging_task.execute(status)
+        logging_task.execute(trainer.status)
 
         if args.gsheet is not None:
             gsheet_id, gsheet_email, gsheet_password = args.gsheet.split()
             logging_task = tasks.LogResultGSheet(gsheet_id, gsheet_email, gsheet_password, "ConvDeepNADE", log_entry, formatting)
-            logging_task.execute(status)
+            logging_task.execute(trainer.status)
 
 if __name__ == '__main__':
     main()

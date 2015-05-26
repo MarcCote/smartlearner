@@ -438,8 +438,6 @@ class EvaluateDeepNadeNLL(Evaluate):
                 for i in range(nb_batches):
                     ln_dth_conditionals = []
                     for d in range(D):
-                        if d % 100 == 0:
-                            print "Orderings: {}\tBatchID: {}\td: {}".format(o, i, d)
                         ln_dth_conditionals.append(compute_lnp_x_o_d_given_x_o_lt_d(i, d))
 
                     nlls[i*batch_size:(i+1)*batch_size] += -np.sum(np.vstack(ln_dth_conditionals).T, axis=1)
