@@ -120,9 +120,9 @@ class DeepConvolutionalDeepNADE(Model):
         output = self.fprop(input, mask_o_lt_d)
         probs = T.sum(output*mask_o_d, axis=1)
         bits = theano_rng.binomial(p=probs, size=probs.shape, n=1, dtype=theano.config.floatX)
-        sample_bit_plus = theano.function([input, mask_o_d, mask_o_lt_d], bits)
+        sample_bit_plus = theano.function([input, mask_o_d, mask_o_lt_d], [bits, probs])
 
-        def _sample(nb_samples, ordering_seed=42):
+        def _sample(nb_samples, ordering_seed=1234):
             rng = np.random.RandomState(ordering_seed)
             D = int(np.prod(self.image_shape))
             ordering = np.arange(D)
@@ -137,11 +137,14 @@ class DeepConvolutionalDeepNADE(Model):
                 o_lt_d[0, :] = 0
 
                 samples = np.zeros((nb_samples, D), dtype="float32")
-                for d, bit in enumerate(range(D)):
+                samples_probs = np.zeros((nb_samples, D), dtype="float32")
+                for d, bit in enumerate(ordering):
                     print d
-                    samples[:, bit] = sample_bit_plus(samples, o_d[d], o_lt_d[d])
+                    bits, probs = sample_bit_plus(samples, o_d[d], o_lt_d[d])
+                    samples[:, bit] = bits
+                    samples_probs[:, bit] = probs
 
-                return samples
+                return samples_probs
         return _sample
 
     def initialize(self, weights_initialization=None):
@@ -246,28 +249,32 @@ class DeepConvolutionalDeepNADE(Model):
         nll = self.get_nll_estimate(input, mask_o_lt_d)
         return nll.mean()
 
-    def nll_of_x_o_d_given_x_o_lt_d(self, input, mask_o_d, mask_o_lt_d):
-        """ Returns the theano graph that computes $-ln p(x_{o_d}|x_{o_{<d}})$.
+    def lnp_x_o_d_given_x_o_lt_d(self, input, mask_o_d, mask_o_lt_d):
+        """ Returns the theano graph that computes $ln p(x_{o_d}|x_{o_{<d}})$.
 
         Parameters
         ----------
         input: 2D matrix
             Batch of images. The shape is (batch_size, nb_channels * images_height * images_width).
 
-        mask_o_d: 1D vector
+        mask_o_d: 1D vector or 2D matrix
             Mask allowing only the $d$-th dimension in the ordering i.e. $x_{o_d}$.
             If 1D vector, the same mask is applied to all images in the batch.
+            If 2D matrix, each images in the batch will have a different mask meaning that
+            mask_o_d.shape[0] == input.shape[0].
 
-        mask_o_lt_d: 1D vector
+        mask_o_lt_d: 1D vector or 2D matrix
             Mask allowing only the $d-1$ first dimensions in the ordering i.e. $x_i : i \in o_{<d}$.
             If 1D vector, the same mask is applied to all images in the batch.
+            If 2D matrix, each images in the batch will have a different mask meaning that
+            mask_o_lt_d.shape[0] == input.shape[0].
         """
         # Retrieves cross entropies for all possible $p(x_i|x_{o_{<d}})$ where $i \in o_{>=d}$.
         cross_entropies = self.get_cross_entropies(input, mask_o_lt_d)
         # We keep only the cross entropy corresponding to $p(x_{o_d}|x_{o_{<d}})$
         cross_entropies_masked = cross_entropies * mask_o_d
-        nll = T.sum(cross_entropies_masked)  # Sum all log-conditionals
-        return nll
+        ln_dth_conditional = -T.sum(cross_entropies_masked, axis=1)  # Keep only the d-th conditional
+        return ln_dth_conditional
 
     def nll_of_x_given_o(self, input, ordering):
         """ Returns the theano graph that computes $-ln p(\bx|o)$.
@@ -290,7 +297,7 @@ class DeepConvolutionalDeepNADE(Model):
         mask_o_lt_d = T.set_subtensor(mask_o_lt_d[0, :], 0.)
 
         input = T.tile(input[None, :], (D, 1))
-        nll = self.nll_of_x_o_d_given_x_o_lt_d(input, mask_o_d, mask_o_lt_d)
+        nll = -T.sum(self.lnp_x_o_d_given_x_o_lt_d(input, mask_o_d, mask_o_lt_d))
         return nll
 
 
@@ -406,19 +413,19 @@ class EvaluateDeepNadeNLL(Evaluate):
         # $o_{<d}$: indices of the d-1 first dimensions in the ordering.
         mask_o_lt_d = T.vector('mask_o_lt_d')
 
-        nll = conv_nade.nll_of_x_o_d_given_x_o_lt_d(input, mask_o_d, mask_o_lt_d)
+        lnp_x_o_d_given_x_o_lt_d = conv_nade.lnp_x_o_d_given_x_o_lt_d(input, mask_o_d, mask_o_lt_d)
 
         no_batch = T.iscalar('no_batch')
         d = T.iscalar('d')
         givens = {input: dataset[no_batch * batch_size:(no_batch + 1) * batch_size],
                   mask_o_d: masks_o_d[d],
                   mask_o_lt_d: masks_o_lt_d[d]}
-        compute_nll_of_x_o_d_given_x_o_lt_d = theano.function([no_batch, d], nll, givens=givens, name="nll_of_x_o_d_given_x_o_lt_d")
-        theano.printing.pydotprint(compute_nll_of_x_o_d_given_x_o_lt_d, '{0}_compute_nll_of_x_o_d_given_x_o_lt_d_{1}'.format(conv_nade.__class__.__name__, theano.config.device), with_ids=True)
+        compute_lnp_x_o_d_given_x_o_lt_d = theano.function([no_batch, d], lnp_x_o_d_given_x_o_lt_d, givens=givens, name="nll_of_x_o_d_given_x_o_lt_d")
+        theano.printing.pydotprint(compute_lnp_x_o_d_given_x_o_lt_d, '{0}_compute_lnp_x_o_d_given_x_o_lt_d_{1}'.format(conv_nade.__class__.__name__, theano.config.device), with_ids=True)
 
         def _nll_mean_and_std():
             nlls = np.zeros(len(dataset_shared.get_value()))
-            for ordering in orderings:
+            for o, ordering in enumerate(orderings):
                 o_d = np.zeros((D, D), dtype=theano.config.floatX)
                 o_d[np.arange(D), ordering] = 1
                 masks_o_d.set_value(o_d)
@@ -429,11 +436,13 @@ class EvaluateDeepNadeNLL(Evaluate):
                 masks_o_lt_d.set_value(o_lt_d)
 
                 for i in range(nb_batches):
-                    nlls_d = []
+                    ln_dth_conditionals = []
                     for d in range(D):
-                        nlls_d.append(compute_nll_of_x_o_d_given_x_o_lt_d(i, d))
+                        if d % 100 == 0:
+                            print "Orderings: {}\tBatchID: {}\td: {}".format(o, i, d)
+                        ln_dth_conditionals.append(compute_lnp_x_o_d_given_x_o_lt_d(i, d))
 
-                    nlls[i*batch_size:(i+1)*batch_size] += np.sum(np.vstack(nlls_d).T, axis=1)
+                    nlls[i*batch_size:(i+1)*batch_size] += -np.sum(np.vstack(ln_dth_conditionals).T, axis=1)
 
             nlls /= len(orderings)  # Average across all orderings
             return round(nlls.mean(), 6), round(nlls.std() / np.sqrt(nlls.shape[0]), 6)

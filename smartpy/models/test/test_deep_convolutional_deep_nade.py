@@ -18,8 +18,8 @@ from smartpy.trainers.trainer import Trainer
 from smartpy.trainers import tasks
 
 from smartpy.models.deep_convolutional_deep_nade import DeepConvolutionalDeepNADE
-from smartpy.models.convolutional_deep_nade import DeepNadeOrderingTask
-from smartpy.models.convolutional_deep_nade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
+from smartpy.models.deep_convolutional_deep_nade import DeepNadeOrderingTask
+from smartpy.models.deep_convolutional_deep_nade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
 from smartpy.misc.weights_initializer import WeightsInitializer
 
 
@@ -87,7 +87,7 @@ def main():
     with utils.Timer("Training"):
         trainer.run()
 
-    with utils.Timer("Checking the probs for all possible inputs sum to 1"):
+    with utils.Timer("Building testing"):
         input = T.vector("input")
         ordering = T.ivector("ordering")
         nll_of_x_given_o = theano.function([input, ordering], model.nll_of_x_given_o(input, ordering), name="nll_of_x_given_o")
@@ -96,7 +96,15 @@ def main():
         D = np.prod(dataset.image_shape)
         from mlpython.misc.utils import cartesian
         inputs = cartesian([[0, 1]]*int(D), dtype=np.float32)
+        inputs_shared = theano.shared(inputs)
+        nll_valid = EvaluateDeepNadeNLL(model, inputs_shared, nb_orderings=nb_orderings)
 
+    with utils.Timer("Checking the probs for all possible inputs sum to 1"):
+        nll_valid.mean.view(trainer.status)
+    print "MEAN: ", nll_valid.mean.view(trainer.status)
+    print "STD: ", nll_valid.std.view(trainer.status)
+
+    with utils.Timer("Checking the probs for all possible inputs sum to 1"):
         rng = np.random.RandomState(ordering_seed)
         for i in range(nb_orderings):
             ordering = np.arange(D, dtype=np.int32)

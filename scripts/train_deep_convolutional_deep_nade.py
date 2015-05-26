@@ -3,7 +3,12 @@
 
 import os
 import sys
+
+# Hack when having multiple clone of smartpy repo like a do.
+sys.path = [os.path.abspath(os.path.join(__file__, '..', '..'))] + sys.path
+
 from os.path import join as pjoin
+
 import argparse
 import datetime
 
@@ -24,8 +29,8 @@ from smartpy.trainers.trainer import Trainer
 from smartpy.trainers import tasks
 
 from smartpy.models.deep_convolutional_deep_nade import DeepConvolutionalDeepNADE
-from smartpy.models.convolutional_deep_nade import DeepNadeOrderingTask
-from smartpy.models.convolutional_deep_nade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
+from smartpy.models.deep_convolutional_deep_nade import DeepNadeOrderingTask
+from smartpy.models.deep_convolutional_deep_nade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
 
 
 DATASETS = ['binarized_mnist']
@@ -216,23 +221,30 @@ def main():
             trainer.load(data_dir)
 
     with utils.Timer("Training"):
-        trainer.run()
-        trainer.status.save(savedir=data_dir)
+        #trainer.run()
+        #trainer.status.save(savedir=data_dir)
 
         if not args.lookahead:
             trainer.save(savedir=data_dir)
 
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
-        nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, batch_size=args.batch_size)
-        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, batch_size=args.batch_size)
-        nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, batch_size=args.batch_size)
+        nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+        nll_valid = EvaluateDeepNadeNLL(model, dataset.validset_shared, batch_size=1000, nb_orderings=1)
+        nll_test = EvaluateDeepNadeNLL(model, dataset.testset_shared, batch_size=args.batch_size, nb_orderings=1)
+
+        print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
+        print "Training NLL std:", nll_train.std.view(trainer.status)
+        print "Validation NLL:", nll_valid.mean.view(trainer.status)
+        print "Validation NLL std:", nll_valid.std.view(trainer.status)
+        print "Testing NLL:", nll_test.mean.view(trainer.status)
+        print "Testing NLL std:", nll_test.std.view(trainer.status)
 
         from collections import OrderedDict
         log_entry = OrderedDict()
         log_entry["Nb. kernels"] = model.hyperparams["list_of_nb_kernels"]
-        log_entry["Kernel Shapes"] = model.hyperparams["lift_of_kernel_shapes"]
-        log_entry["Border Modes"] = model.hyperparams["lift_of_border_modes"]
+        log_entry["Kernel Shapes"] = model.hyperparams["list_of_kernel_shapes"]
+        log_entry["Border Modes"] = model.hyperparams["list_of_border_modes"]
         log_entry["Mask as channel"] = model.hyperparams["consider_mask_as_channel"]
         log_entry["Activation Function"] = model.hyperparams["hidden_activation"]
         log_entry["Initialization Seed"] = args.initialization_seed
@@ -252,9 +264,9 @@ def main():
         log_entry["Weights Initialization"] = args.weights_initialization
         log_entry["Training NLL - Estimate"] = nll_train.mean
         log_entry["Training NLL std"] = nll_train.std
-        log_entry["Validation NLL - Estimate"] = nll_valid.mean
+        log_entry["Validation NLL"] = nll_valid.mean
         log_entry["Validation NLL std"] = nll_valid.std
-        log_entry["Testing NLL - Estimate"] = nll_test.mean
+        log_entry["Testing NLL"] = nll_test.mean
         log_entry["Testing NLL std"] = nll_test.std
         log_entry["Training Time"] = trainer.status.training_time
         log_entry["Experiment"] = os.path.abspath(data_dir)
@@ -262,9 +274,9 @@ def main():
         formatting = {}
         formatting["Training NLL - Estimate"] = "{:.6f}"
         formatting["Training NLL std"] = "{:.6f}"
-        formatting["Validation NLL - Estimate"] = "{:.6f}"
+        formatting["Validation NLL"] = "{:.6f}"
         formatting["Validation NLL std"] = "{:.6f}"
-        formatting["Testing NLL - Estimate"] = "{:.6f}"
+        formatting["Testing NLL"] = "{:.6f}"
         formatting["Testing NLL std"] = "{:.6f}"
         formatting["Training Time"] = "{:.4f}"
 
