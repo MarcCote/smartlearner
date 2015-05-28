@@ -234,7 +234,7 @@ def main():
         log_entry = OrderedDict()
         log_entry["Blueprint"] = args.blueprint
         log_entry["Mask as channel"] = model.hyperparams["consider_mask_as_channel"]
-        log_entry["Activation Function"] = model.hyperparams["hidden_activation"]
+        log_entry["Activation Function"] = args.hidden_activation
         log_entry["Initialization Seed"] = args.initialization_seed
         log_entry["Best Epoch"] = trainer.status.extra["best_epoch"] if args.lookahead else trainer.status.current_epoch
         log_entry["Max Epoch"] = trainer.stopping_criteria[0].nb_epochs_max if args.max_epoch else ''
