@@ -301,7 +301,6 @@ class DeepConvolutionalDeepNADE(Model):
         return nll
 
 
-
 from smartpy.trainers.tasks import Task, ItemGetter
 from smartpy.trainers.tasks import Evaluate
 

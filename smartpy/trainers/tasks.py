@@ -2,6 +2,7 @@
 from __future__ import division
 
 import os
+from os.path import join as pjoin
 import numpy as np
 from collections import OrderedDict
 from time import time
@@ -43,6 +44,12 @@ class Task(object):
         pass
 
     def execute(self, status):
+        pass
+
+    def save(self, savedir):
+        pass
+
+    def load(self, loaddir):
         pass
 
 

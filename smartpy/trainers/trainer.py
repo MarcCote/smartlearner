@@ -1,6 +1,8 @@
+import os
 import numpy as np
 from collections import OrderedDict
 from itertools import count
+from os.path import join as pjoin
 
 from threading import Thread
 
@@ -66,10 +68,21 @@ class Trainer(Thread):
         self.optimizer.save(savedir)
         self.model.save(savedir)
 
+        tasks_dir = pjoin(savedir, 'tasks')
+        if not os.path.isdir(tasks_dir):
+            os.mkdir(tasks_dir)
+
+        for task in self.tasks:
+            task.save(tasks_dir)
+
     def load(self, loaddir="./"):
         self.status.load(loaddir)
         self.optimizer.load(loaddir)
         self.model.load(loaddir)
+
+        tasks_dir = pjoin(loaddir, 'tasks')
+        for task in self.tasks:
+            task.load(tasks_dir)
 
     def run(self):
         learn = self.optimizer.build_learning_function(extra_updates=self.updates)
