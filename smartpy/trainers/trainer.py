@@ -86,7 +86,7 @@ class Trainer(Thread):
 
     def run(self):
         learn = self.optimizer.build_learning_function(extra_updates=self.updates)
-        theano.printing.pydotprint(learn, '{0}_learn_{1}'.format(self.model.__class__.__name__, theano.config.device), with_ids=True)
+        #theano.printing.pydotprint(learn, '{0}_learn_{1}'.format(self.model.__class__.__name__, theano.config.device), with_ids=True)
 
         # Only do init if not resuming
         if self.status.current_epoch == 0:
