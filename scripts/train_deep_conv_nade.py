@@ -219,8 +219,8 @@ def main():
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
         nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
-        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, batch_size=args.batch_size)
-        nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, batch_size=args.batch_size)
+        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+        nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
 
         print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
         print "Training NLL std:", nll_train.std.view(trainer.status)
