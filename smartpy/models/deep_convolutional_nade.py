@@ -658,7 +658,7 @@ class EvaluateDeepNadeNLL(Evaluate):
                   mask_o_d: masks_o_d[d],
                   mask_o_lt_d: masks_o_lt_d[d]}
         compute_lnp_x_o_d_given_x_o_lt_d = theano.function([no_batch, d], lnp_x_o_d_given_x_o_lt_d, givens=givens, name="nll_of_x_o_d_given_x_o_lt_d")
-        theano.printing.pydotprint(compute_lnp_x_o_d_given_x_o_lt_d, '{0}_compute_lnp_x_o_d_given_x_o_lt_d_{1}'.format(conv_nade.__class__.__name__, theano.config.device), with_ids=True)
+        #theano.printing.pydotprint(compute_lnp_x_o_d_given_x_o_lt_d, '{0}_compute_lnp_x_o_d_given_x_o_lt_d_{1}'.format(conv_nade.__class__.__name__, theano.config.device), with_ids=True)
 
         def _nll_mean_and_std():
             nlls = np.zeros(len(dataset_shared.get_value()))
