@@ -469,11 +469,13 @@ class DeepConvNADEBuilder(object):
                  image_shape,
                  nb_channels,
                  ordering_seed=1234,
-                 consider_mask_as_channel=False):
+                 consider_mask_as_channel=False,
+                 hidden_activation="sigmoid"):
         self.image_shape = image_shape
         self.nb_channels = nb_channels
         self.ordering_seed = ordering_seed
         self.consider_mask_as_channel = consider_mask_as_channel
+        self.hidden_activation = hidden_activation
 
         self.layers = []
         input_layer = Layer(size=self.nb_channels + self.consider_mask_as_channel, name="input")
@@ -524,7 +526,10 @@ class DeepConvNADEBuilder(object):
                     raise ValueError("Unknown border mode for '{}'".format(layer_blueprint))
 
                 filter_shape = tuple(map(int, infos[1][:-len("(" + border_mode + ")")].split("x")))
-                layer = ConvolutionalLayer(nb_filters, filter_shape, border_mode)
+                layer = ConvolutionalLayer(nb_filters=nb_filters,
+                                           filter_shape=filter_shape,
+                                           border_mode=border_mode,
+                                           activation=self.hidden_activation)
                 self.stack(layer)
 
         return self.build()

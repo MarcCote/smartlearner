@@ -155,7 +155,8 @@ def main():
         builder = DeepConvNADEBuilder(image_shape=dataset.image_shape,
                                       nb_channels=dataset.nb_channels,
                                       ordering_seed=args.ordering_seed,
-                                      consider_mask_as_channel=args.consider_mask_as_channel)
+                                      consider_mask_as_channel=args.consider_mask_as_channel,
+                                      hidden_activation=args.hidden_activation)
 
         model = builder.build_from_blueprint(args.blueprint)
 
@@ -231,9 +232,7 @@ def main():
 
         from collections import OrderedDict
         log_entry = OrderedDict()
-        log_entry["Nb. kernels"] = model.hyperparams["list_of_nb_kernels"]
-        log_entry["Kernel Shapes"] = model.hyperparams["list_of_kernel_shapes"]
-        log_entry["Border Modes"] = model.hyperparams["list_of_border_modes"]
+        log_entry["Blueprint"] = args.blueprint
         log_entry["Mask as channel"] = model.hyperparams["consider_mask_as_channel"]
         log_entry["Activation Function"] = model.hyperparams["hidden_activation"]
         log_entry["Initialization Seed"] = args.initialization_seed
