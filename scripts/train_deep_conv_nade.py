@@ -248,7 +248,9 @@ def main():
 
         log_entry["Batch Size"] = trainer.optimizer.batch_size
         log_entry["Update Rule"] = trainer.optimizer.update_rules[0].__class__.__name__
-        log_entry["Learning Rate"] = trainer.optimizer.update_rules[0].lr
+        update_rule = trainer.optimizer.update_rules[0]
+        log_entry["Learning Rate"] = "; ".join(["{0}={1}".format(name, getattr(update_rule, name)) for name in update_rule.__hyperparams__.keys()])
+
         log_entry["Weights Initialization"] = args.weights_initialization
         log_entry["Training NLL - Estimate"] = nll_train.mean
         log_entry["Training NLL std"] = nll_train.std
