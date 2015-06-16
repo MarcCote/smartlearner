@@ -28,34 +28,29 @@ from smartpy.misc.utils import ACTIVATION_FUNCTIONS
 from smartpy.trainers.trainer import Trainer
 from smartpy.trainers import tasks
 
-from smartpy.models.deep_convolutional_deep_nade import DeepConvolutionalDeepNADE
-from smartpy.models.deep_convolutional_deep_nade import DeepNadeOrderingTask
-from smartpy.models.deep_convolutional_deep_nade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
+from smartpy.models.convolutional_deepnade import DeepConvNADEBuilder
+
+from smartpy.models.convolutional_deepnade import DeepNadeOrderingTask
+from smartpy.models.convolutional_deepnade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
 
 
 DATASETS = ['binarized_mnist']
 
 
 def build_launch_experiment_argsparser(subparser):
-    DESCRIPTION = "Train a Convolutional Deep NADE model on a specific dataset using Theano."
+    DESCRIPTION = "Train a Deep Convolutional NADE model on a specific dataset using Theano."
 
-    p = subparser.add_parser("launch",
-                             description=DESCRIPTION,
-                             help=DESCRIPTION,
-                             #formatter_class=argparse.ArgumentDefaultsHelpFormatter
-                             )
+    p = subparser.add_parser("launch", description=DESCRIPTION, help=DESCRIPTION)
 
     # General parameters (required)
-    p.add_argument('--dataset', type=str, help='dataset to use [{0}].'.format(', '.join(DATASETS)),
-                   default=DATASETS[0], choices=DATASETS)
+    p.add_argument('--dataset', type=str, help='dataset to use [{0}].'.format(', '.join(DATASETS)), default=DATASETS[0], choices=DATASETS)
 
     # NADE-like's hyperparameters
     model = p.add_argument_group("Convolutional Deep NADE")
-    model.add_argument('--nb_kernels', type=int, action="append", help='number of kernel/filter for the convolutional layer.', required=True, dest="list_of_nb_kernels")
-    model.add_argument('--kernel_shape', type=int, nargs=2, action="append", help='height and width of kernel/filter.', required=True, dest="list_of_kernel_shapes")
-    model.add_argument('--border_mode', type=str, action="append", help='border mode for convolution: valid or full.', required=True, dest="list_of_border_modes")
+    model.add_argument('blueprint', type=str, help='blueprint of the layers e.g. "64@3x3(valid)->32@7x7(full)".')
     model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
     model.add_argument('--consider_mask_as_channel', action='store_true', help='consider the ordering mask as a another channel in the convolutional layer.')
+    model.add_argument('--fully_connected_layer_size', type=int, help='size of the fully connected layer (from input to output). Default=0', default=0)
 
     model.add_argument('--hidden_activation', type=str, help="Activation functions: {}".format(ACTIVATION_FUNCTIONS.keys()), choices=ACTIVATION_FUNCTIONS.keys(), default=ACTIVATION_FUNCTIONS.keys()[0])
     model.add_argument('--weights_initialization', type=str, help='which type of initialization to use when creating weights [{0}].'.format(", ".join(WEIGHTS_INITIALIZERS)), default=WEIGHTS_INITIALIZERS[0], choices=WEIGHTS_INITIALIZERS)
@@ -66,8 +61,7 @@ def build_launch_experiment_argsparser(subparser):
 
     # Optimizer hyperparameters
     optimizer = p.add_argument_group("Optimizer")
-    optimizer.add_argument('--optimizer', type=str, help='optimizer to use for training: [{0}]'.format(OPTIMIZERS),
-                           default=OPTIMIZERS[0], choices=OPTIMIZERS)
+    optimizer.add_argument('--optimizer', type=str, help='optimizer to use for training: [{0}]'.format(OPTIMIZERS), default=OPTIMIZERS[0], choices=OPTIMIZERS)
     optimizer.add_argument('--batch_size', type=int, help='size of the batch to use when training the model.', default=1)
 
     # Trainer parameters
@@ -86,12 +80,7 @@ def build_launch_experiment_argsparser(subparser):
 
 def build_resume_experiment_argsparser(subparser):
     DESCRIPTION = 'Resume a specific experiment.'
-
-    p = subparser.add_parser("resume",
-                             description=DESCRIPTION,
-                             help=DESCRIPTION,
-                             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
+    p = subparser.add_parser("resume", description=DESCRIPTION, help=DESCRIPTION)
     p.add_argument(dest='experiment', type=str, help="experiment's directory")
 
 
@@ -164,21 +153,24 @@ def main():
             dataset.nb_channels = 1
 
     with utils.Timer("Building model"):
-        model = DeepConvolutionalDeepNADE(image_shape=dataset.image_shape,
-                                          nb_channels=dataset.nb_channels,
-                                          list_of_nb_kernels=args.list_of_nb_kernels,
-                                          list_of_kernel_shapes=map(tuple, args.list_of_kernel_shapes),
-                                          list_of_border_modes=args.list_of_border_modes,
-                                          hidden_activation=args.hidden_activation,
-                                          consider_mask_as_channel=args.consider_mask_as_channel
-                                          )
+        builder = DeepConvNADEBuilder(image_shape=dataset.image_shape,
+                                      nb_channels=dataset.nb_channels,
+                                      ordering_seed=args.ordering_seed,
+                                      consider_mask_as_channel=args.consider_mask_as_channel,
+                                      hidden_activation=args.hidden_activation,
+                                      fully_connected_layer_size=args.fully_connected_layer_size)
+
+        model = builder.build_from_blueprint(args.blueprint)
 
         from smartpy.misc import weights_initializer
         weights_initialization_method = weights_initializer.factory(**vars(args))
         model.initialize(weights_initialization_method)
 
+    # Print structure of the model for debugging
+    print model
+
     with utils.Timer("Building optimizer"):
-        ordering_task = DeepNadeOrderingTask(int(np.prod(model.image_shape)), args.batch_size, args.ordering_seed)
+        ordering_task = DeepNadeOrderingTask(int(np.prod(model.image_shape)), args.batch_size, model.ordering_seed)
         loss = lambda input: model.mean_nll_estimate_loss(input, ordering_task.ordering_mask)
 
         optimizer = optimizers.factory(args.optimizer, loss=loss, **vars(args))
@@ -230,8 +222,8 @@ def main():
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
         nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
-        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, batch_size=args.batch_size, nb_orderings=1)
-        nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, batch_size=args.batch_size, nb_orderings=1)
+        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+        nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
 
         print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
         print "Training NLL std:", nll_train.std.view(trainer.status)
@@ -242,11 +234,9 @@ def main():
 
         from collections import OrderedDict
         log_entry = OrderedDict()
-        log_entry["Nb. kernels"] = model.hyperparams["list_of_nb_kernels"]
-        log_entry["Kernel Shapes"] = model.hyperparams["list_of_kernel_shapes"]
-        log_entry["Border Modes"] = model.hyperparams["list_of_border_modes"]
+        log_entry["Blueprint"] = args.blueprint
         log_entry["Mask as channel"] = model.hyperparams["consider_mask_as_channel"]
-        log_entry["Activation Function"] = model.hyperparams["hidden_activation"]
+        log_entry["Activation Function"] = args.hidden_activation
         log_entry["Initialization Seed"] = args.initialization_seed
         log_entry["Best Epoch"] = trainer.status.extra["best_epoch"] if args.lookahead else trainer.status.current_epoch
         log_entry["Max Epoch"] = trainer.stopping_criteria[0].nb_epochs_max if args.max_epoch else ''
@@ -260,7 +250,9 @@ def main():
 
         log_entry["Batch Size"] = trainer.optimizer.batch_size
         log_entry["Update Rule"] = trainer.optimizer.update_rules[0].__class__.__name__
-        log_entry["Learning Rate"] = trainer.optimizer.update_rules[0].lr
+        update_rule = trainer.optimizer.update_rules[0]
+        log_entry["Learning Rate"] = "; ".join(["{0}={1}".format(name, getattr(update_rule, name)) for name in update_rule.__hyperparams__.keys()])
+
         log_entry["Weights Initialization"] = args.weights_initialization
         log_entry["Training NLL - Estimate"] = nll_train.mean
         log_entry["Training NLL std"] = nll_train.std

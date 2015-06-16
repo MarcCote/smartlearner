@@ -287,18 +287,29 @@ class DeepConvNADE(DeepModel):
                  nb_channels,
                  layers,
                  ordering_seed=1234,
-                 consider_mask_as_channel=False):
+                 consider_mask_as_channel=False,
+                 fully_connected_layer_size=0):
         super(DeepConvNADE, self).__init__(layers)
         self.image_shape = image_shape
         self.nb_channels = nb_channels
         self.ordering_seed = ordering_seed
         self.consider_mask_as_channel = consider_mask_as_channel
+        self.fully_connected_layer_size = fully_connected_layer_size
 
         # Make sure the deep network outputs 'np.prod(image_shape)' units.
         input_shape = (1, nb_channels) + image_shape
         out_shape = self.infer_shape(input_shape)
         if out_shape != (1, 1) + image_shape:
             raise ValueError("Output shape mismatched: {} != {}".format(out_shape, (1, 1) + image_shape))
+
+        if self.fully_connected_layer_size > 0:
+            W_shape = (int(np.prod(self.image_shape)), self.fully_connected_layer_size)
+            self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='fully_W', borrow=True)
+            self.bhid = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
+
+            V_shape = (self.fully_connected_layer_size, int(np.prod(self.image_shape)))
+            self.V = theano.shared(value=np.zeros(V_shape, dtype=theano.config.floatX), name='fully_V', borrow=True)
+            self.bvis = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bvis', borrow=True)
 
     @property
     def hyperparams(self):
@@ -307,17 +318,34 @@ class DeepConvNADE(DeepModel):
         hyperparams['nb_channels'] = self.nb_channels
         hyperparams['ordering_seed'] = self.ordering_seed
         hyperparams['consider_mask_as_channel'] = self.consider_mask_as_channel
+        hyperparams['fully_connected_layer_size'] = self.fully_connected_layer_size
         return hyperparams
 
     @property
     def params(self):
         params = super(DeepConvNADE, self).params
+
+        if self.fully_connected_layer_size > 0:
+            params[self.W.name] = self.W
+            params[self.V.name] = self.V
+            params[self.bhid.name] = self.bhid
+            #params[self.bvis.name] = self.bvis
+
         return params
 
     @property
     def parameters(self):
         """ TODO: choose between parameters or params """
         return self.params.values()
+
+    def initialize(self, weight_initializer):
+        if weight_initializer is None:
+            weight_initializer = WeightsInitializer().uniform
+
+        super(DeepConvNADE, self).initialize(weight_initializer)
+
+        self.W.set_value(weight_initializer(self.W.get_value().shape))
+        self.V.set_value(weight_initializer(self.V.get_value().shape))
 
     def fprop(self, input, mask_o_lt_d, return_output_preactivation=False):
         """ Returns the theano graph that computes the fprop given an `input` and an `ordering`.
@@ -351,7 +379,14 @@ class DeepConvNADE(DeepModel):
         _, pre_output = super(DeepConvNADE, self).fprop(input_masked, return_output_preactivation=True)
 
         # This will generate a matrix of shape (batch_size, nb_kernels * kernel_height * kernel_width).
-        pre_output = pre_output.flatten(2)
+        pre_output_convnet = pre_output.flatten(2)
+
+        pre_output_fully = 0
+        if self.fully_connected_layer_size > 0:
+            fully_conn_hidden = T.nnet.sigmoid(T.dot(input*mask_o_lt_d, self.W) + self.bhid)
+            pre_output_fully = T.dot(fully_conn_hidden, self.V)
+
+        pre_output = pre_output_convnet + pre_output_fully
         output = T.nnet.sigmoid(pre_output)  # Force use of sigmoid for the output layer
 
         if return_output_preactivation:
@@ -470,12 +505,15 @@ class DeepConvNADEBuilder(object):
                  nb_channels,
                  ordering_seed=1234,
                  consider_mask_as_channel=False,
-                 hidden_activation="sigmoid"):
+                 hidden_activation="sigmoid",
+                 fully_connected_layer_size=0):
+
         self.image_shape = image_shape
         self.nb_channels = nb_channels
         self.ordering_seed = ordering_seed
         self.consider_mask_as_channel = consider_mask_as_channel
         self.hidden_activation = hidden_activation
+        self.fully_connected_layer_size = fully_connected_layer_size
 
         self.layers = []
         input_layer = Layer(size=self.nb_channels + self.consider_mask_as_channel, name="input")
@@ -497,7 +535,8 @@ class DeepConvNADEBuilder(object):
                              nb_channels=self.nb_channels,
                              layers=self.layers,
                              ordering_seed=self.ordering_seed,
-                             consider_mask_as_channel=self.consider_mask_as_channel)
+                             consider_mask_as_channel=self.consider_mask_as_channel,
+                             fully_connected_layer_size=self.fully_connected_layer_size)
 
         return model
 
