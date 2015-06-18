@@ -225,7 +225,7 @@ def main():
 
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
-        #nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+        nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
 
         nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
         nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
@@ -234,8 +234,8 @@ def main():
             nll_valid = EvaluateDeepNadeNLL(model, dataset.validset_shared, batch_size=args.batch_size*10, nb_orderings=args.ensemble)
             nll_test = EvaluateDeepNadeNLL(model, dataset.testset_shared, batch_size=args.batch_size*10, nb_orderings=args.ensemble)
 
-        #print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
-        #print "Training NLL std:", nll_train.std.view(trainer.status)
+        print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
+        print "Training NLL std:", nll_train.std.view(trainer.status)
         print "Validation NLL - Estimate:", nll_valid.mean.view(trainer.status)
         print "Validation NLL std:", nll_valid.std.view(trainer.status)
         print "Testing NLL - Estimate:", nll_test.mean.view(trainer.status)
