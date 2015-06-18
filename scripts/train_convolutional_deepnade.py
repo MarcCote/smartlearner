@@ -231,8 +231,8 @@ def main():
         nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
 
         if args.exact_inference:
-            nll_valid = EvaluateDeepNadeNLL(model, dataset.validset_shared, batch_size=args.batch_size*100, nb_orderings=args.ensemble)
-            nll_test = EvaluateDeepNadeNLL(model, dataset.testset_shared, batch_size=args.batch_size*100, nb_orderings=args.ensemble)
+            nll_valid = EvaluateDeepNadeNLL(model, dataset.validset_shared, batch_size=args.batch_size*10, nb_orderings=args.ensemble)
+            nll_test = EvaluateDeepNadeNLL(model, dataset.testset_shared, batch_size=args.batch_size*10, nb_orderings=args.ensemble)
 
         #print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
         #print "Training NLL std:", nll_train.std.view(trainer.status)

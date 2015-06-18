@@ -15,6 +15,7 @@ from smartpy.misc.weights_initializer import WeightsInitializer
 
 from abc import ABCMeta, abstractmethod
 from types import MethodType
+from time import time
 
 
 class LayerDecorator(object):
@@ -303,17 +304,17 @@ class DeepConvNADE(DeepModel):
             raise ValueError("Output shape mismatched: {} != {}".format(out_shape, (1, 1) + image_shape))
 
         if self.fully_connected_layer_size > 0:
-            fully_connected_layer_size = self.fully_connected_layer_size
-            if self.consider_mask_as_channel and False:
-                fully_connected_layer_size += int(np.prod(self.image_shape))
+            input_size = int(np.prod(self.image_shape))
+            if self.consider_mask_as_channel:
+                input_size *= 2
 
-            W_shape = (int(np.prod(self.image_shape)), fully_connected_layer_size)
+            W_shape = (input_size, self.fully_connected_layer_size)
             self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='fully_W', borrow=True)
-            self.bhid = theano.shared(value=np.zeros(fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
+            self.bhid = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
 
-            V_shape = (fully_connected_layer_size, int(np.prod(self.image_shape)))
+            V_shape = (self.fully_connected_layer_size, int(np.prod(self.image_shape)))
             self.V = theano.shared(value=np.zeros(V_shape, dtype=theano.config.floatX), name='fully_V', borrow=True)
-            self.bvis = theano.shared(value=np.zeros(fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bvis', borrow=True)
+            self.bvis = theano.shared(value=np.zeros(int(np.prod(self.image_shape)), dtype=theano.config.floatX), name='fully_bvis', borrow=True)
 
     @property
     def hyperparams(self):
@@ -366,8 +367,6 @@ class DeepConvNADE(DeepModel):
             If 2D matrix, each images in the batch will have a different mask meaning that
             mask_o_lt_d.shape[0] == input.shape[0].
         """
-        # For debugging purpose
-        input.tag.test_value = np.random.rand(10, self.nb_channels, *self.image_shape)
         input_masked = input * mask_o_lt_d
 
         nb_input_feature_maps = self.nb_channels
@@ -391,10 +390,8 @@ class DeepConvNADE(DeepModel):
         pre_output_fully = 0
         if self.fully_connected_layer_size > 0:
             input_masked_fully_connected = input * mask_o_lt_d
-            if self.consider_mask_as_channel and False:
-                from ipdb import set_trace as dbg
-                dbg()
-                input_masked_fully_connected = T.concatenate([input_masked, mask_o_lt_d], axis=1)
+            if self.consider_mask_as_channel:
+                input_masked_fully_connected = T.concatenate([input_masked_fully_connected, mask_o_lt_d], axis=1)
 
             fully_conn_hidden = T.nnet.sigmoid(T.dot(input_masked_fully_connected, self.W) + self.bhid)
             pre_output_fully = T.dot(fully_conn_hidden, self.V)
@@ -732,9 +729,12 @@ class EvaluateDeepNadeNLL(Evaluate):
                 for i in range(nb_batches):
                     print "Batch {0}/{1}".format(i, nb_batches)
                     ln_dth_conditionals = []
+                    start = time()
                     for d in range(D):
-                        if d % 100 == 0:
-                            print "{0}/{1} dth conditional".format(d, D)
+                        if d % 10 == 0:
+                            print "{0}/{1} dth conditional ({2:.2f} sec.)".format(d, D, time()-start)
+                            start = time()
+
                         ln_dth_conditionals.append(compute_lnp_x_o_d_given_x_o_lt_d(i, d))
 
                     # We average p(x) on different orderings
