@@ -88,6 +88,9 @@ def buildArgsParser():
     DESCRIPTION = "Script to launch/resume unsupervised experiment using Theano."
     p = argparse.ArgumentParser(description=DESCRIPTION, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
+    p.add_argument('--exact_inference', action='store_true', help='Compute the exact NLL on the validset and testset (slower)')
+    p.add_argument('--ensemble', type=int, help='Size of the ensemble. Default=1', default=1)
+    p.add_argument('--no-train', action='store_true', help='Skip training part of the script and perform reporting')
     p.add_argument('--keep', dest='save_frequency', action='store', type=int, help='save model every N epochs. Default=once finished', default=np.inf)
     p.add_argument('--report', dest='report_frequency', action='store', type=int, help="report results every N epochs. Default=once finished", default=np.inf)
     p.add_argument('--gsheet', type=str, metavar="SHEET_ID EMAIL PASSWORD", help="log results into a Google's Spreadsheet.")
@@ -212,21 +215,27 @@ def main():
             print "Loading existing trainer..."
             trainer.load(data_dir)
 
-    with utils.Timer("Training"):
-        trainer.run()
-        trainer.status.save(savedir=data_dir)
+    if not args.no_train:
+        with utils.Timer("Training"):
+            trainer.run()
+            trainer.status.save(savedir=data_dir)
 
-        if not args.lookahead:
-            trainer.save(savedir=data_dir)
+            if not args.lookahead:
+                trainer.save(savedir=data_dir)
 
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
-        nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+        #nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+
         nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
         nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
 
-        print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
-        print "Training NLL std:", nll_train.std.view(trainer.status)
+        if args.exact_inference:
+            nll_valid = EvaluateDeepNadeNLL(model, dataset.validset_shared, batch_size=args.batch_size*100, nb_orderings=args.ensemble)
+            nll_test = EvaluateDeepNadeNLL(model, dataset.testset_shared, batch_size=args.batch_size*100, nb_orderings=args.ensemble)
+
+        #print "Training NLL - Estimate:", nll_train.mean.view(trainer.status)
+        #print "Training NLL std:", nll_train.std.view(trainer.status)
         print "Validation NLL - Estimate:", nll_valid.mean.view(trainer.status)
         print "Validation NLL std:", nll_valid.std.view(trainer.status)
         print "Testing NLL - Estimate:", nll_test.mean.view(trainer.status)

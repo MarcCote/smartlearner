@@ -303,13 +303,17 @@ class DeepConvNADE(DeepModel):
             raise ValueError("Output shape mismatched: {} != {}".format(out_shape, (1, 1) + image_shape))
 
         if self.fully_connected_layer_size > 0:
-            W_shape = (int(np.prod(self.image_shape)), self.fully_connected_layer_size)
-            self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='fully_W', borrow=True)
-            self.bhid = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
+            fully_connected_layer_size = self.fully_connected_layer_size
+            if self.consider_mask_as_channel and False:
+                fully_connected_layer_size += int(np.prod(self.image_shape))
 
-            V_shape = (self.fully_connected_layer_size, int(np.prod(self.image_shape)))
+            W_shape = (int(np.prod(self.image_shape)), fully_connected_layer_size)
+            self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='fully_W', borrow=True)
+            self.bhid = theano.shared(value=np.zeros(fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
+
+            V_shape = (fully_connected_layer_size, int(np.prod(self.image_shape)))
             self.V = theano.shared(value=np.zeros(V_shape, dtype=theano.config.floatX), name='fully_V', borrow=True)
-            self.bvis = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bvis', borrow=True)
+            self.bvis = theano.shared(value=np.zeros(fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bvis', borrow=True)
 
     @property
     def hyperparams(self):
@@ -344,8 +348,9 @@ class DeepConvNADE(DeepModel):
 
         super(DeepConvNADE, self).initialize(weight_initializer)
 
-        self.W.set_value(weight_initializer(self.W.get_value().shape))
-        self.V.set_value(weight_initializer(self.V.get_value().shape))
+        if self.fully_connected_layer_size > 0:
+            self.W.set_value(weight_initializer(self.W.get_value().shape))
+            self.V.set_value(weight_initializer(self.V.get_value().shape))
 
     def fprop(self, input, mask_o_lt_d, return_output_preactivation=False):
         """ Returns the theano graph that computes the fprop given an `input` and an `ordering`.
@@ -361,6 +366,8 @@ class DeepConvNADE(DeepModel):
             If 2D matrix, each images in the batch will have a different mask meaning that
             mask_o_lt_d.shape[0] == input.shape[0].
         """
+        # For debugging purpose
+        input.tag.test_value = np.random.rand(10, self.nb_channels, *self.image_shape)
         input_masked = input * mask_o_lt_d
 
         nb_input_feature_maps = self.nb_channels
@@ -383,7 +390,13 @@ class DeepConvNADE(DeepModel):
 
         pre_output_fully = 0
         if self.fully_connected_layer_size > 0:
-            fully_conn_hidden = T.nnet.sigmoid(T.dot(input*mask_o_lt_d, self.W) + self.bhid)
+            input_masked_fully_connected = input * mask_o_lt_d
+            if self.consider_mask_as_channel and False:
+                from ipdb import set_trace as dbg
+                dbg()
+                input_masked_fully_connected = T.concatenate([input_masked, mask_o_lt_d], axis=1)
+
+            fully_conn_hidden = T.nnet.sigmoid(T.dot(input_masked_fully_connected, self.W) + self.bhid)
             pre_output_fully = T.dot(fully_conn_hidden, self.V)
 
         pre_output = pre_output_convnet + pre_output_fully
@@ -705,7 +718,7 @@ class EvaluateDeepNadeNLL(Evaluate):
         #theano.printing.pydotprint(compute_lnp_x_o_d_given_x_o_lt_d, '{0}_compute_lnp_x_o_d_given_x_o_lt_d_{1}'.format(conv_nade.__class__.__name__, theano.config.device), with_ids=True)
 
         def _nll_mean_and_std():
-            nlls = np.zeros(len(dataset_shared.get_value()))
+            nlls = -np.inf * np.ones(len(dataset_shared.get_value()))
             for o, ordering in enumerate(orderings):
                 o_d = np.zeros((D, D), dtype=theano.config.floatX)
                 o_d[np.arange(D), ordering] = 1
@@ -717,13 +730,18 @@ class EvaluateDeepNadeNLL(Evaluate):
                 masks_o_lt_d.set_value(o_lt_d)
 
                 for i in range(nb_batches):
+                    print "Batch {0}/{1}".format(i, nb_batches)
                     ln_dth_conditionals = []
                     for d in range(D):
+                        if d % 100 == 0:
+                            print "{0}/{1} dth conditional".format(d, D)
                         ln_dth_conditionals.append(compute_lnp_x_o_d_given_x_o_lt_d(i, d))
 
-                    nlls[i*batch_size:(i+1)*batch_size] += -np.sum(np.vstack(ln_dth_conditionals).T, axis=1)
+                    # We average p(x) on different orderings
+                    #nlls[i*batch_size:(i+1)*batch_size] += -np.sum(np.vstack(ln_dth_conditionals).T, axis=1)
+                    nlls[i*batch_size:(i+1)*batch_size] = np.logaddexp(nlls[i*batch_size:(i+1)*batch_size], -np.sum(np.vstack(ln_dth_conditionals).T, axis=1))
 
-            nlls /= len(orderings)  # Average across all orderings
+            nlls -= np.log(len(orderings))  # Average across all orderings
             return round(nlls.mean(), 6), round(nlls.std() / np.sqrt(nlls.shape[0]), 6)
 
         super(EvaluateDeepNadeNLL, self).__init__(_nll_mean_and_std)
