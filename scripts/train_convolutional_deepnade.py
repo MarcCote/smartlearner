@@ -37,6 +37,64 @@ from smartpy.models.convolutional_deepnade import EvaluateDeepNadeNLL, EvaluateD
 DATASETS = ['binarized_mnist']
 
 
+def generate_blueprints(seed, image_shape):
+    rng = np.random.RandomState(seed)
+
+    # Generate convoluational layers blueprint
+    convnet_blueprint = []
+    convnet_blueprint_inverse = []  # We want convnet to be symmetrical
+    nb_layers = rng.randint(1, 5+1)
+    layer_id_first_conv = -1
+    for layer_id in range(nb_layers):
+        if image_shape <= 2:
+            # Too small
+            continue
+
+        if rng.rand() <= 0.8:
+            # 70% of the time do a convolution
+            nb_filters = rng.choice([16, 32, 64, 128, 256, 512])
+            filter_shape = rng.randint(2, min(image_shape, 8+1))
+            image_shape = image_shape-filter_shape+1
+
+            filter_shape = (filter_shape, filter_shape)
+            convnet_blueprint.append("{nb_filters}@{filter_shape}(valid)".format(nb_filters=nb_filters,
+                                                                                 filter_shape="x".join(map(str, filter_shape))))
+            convnet_blueprint_inverse.append("{nb_filters}@{filter_shape}(full)".format(nb_filters=nb_filters,
+                                                                                        filter_shape="x".join(map(str, filter_shape))))
+            if layer_id_first_conv == -1:
+                layer_id_first_conv = layer_id
+        else:
+            # 30% of the time do a max pooling
+            pooling_shape = rng.randint(2, 5+1)
+            while not image_shape % pooling_shape == 0:
+                pooling_shape = rng.randint(2, 5+1)
+
+            image_shape = image_shape / pooling_shape
+            #pooling_shape = 2  # For now, we limit ourselves to pooling of 2x2
+            pooling_shape = (pooling_shape, pooling_shape)
+            convnet_blueprint.append("max@{pooling_shape}".format(pooling_shape="x".join(map(str, pooling_shape))))
+            convnet_blueprint_inverse.append("up@{pooling_shape}".format(pooling_shape="x".join(map(str, pooling_shape))))
+
+    # Need to make sure there is only one channel in output
+    infos = convnet_blueprint_inverse[layer_id_first_conv].split("@")[-1]
+    convnet_blueprint_inverse[layer_id_first_conv] = "1@" + infos
+
+    # Connect first part and second part of the convnet
+    convnet_blueprint = "->".join(convnet_blueprint) + "->" + "->".join(convnet_blueprint_inverse[::-1])
+
+    # Generate fully connected layers blueprint
+    fullnet_blueprint = []
+    nb_layers = rng.randint(1, 4+1)  # Deep NADE only used up to 4 hidden layers
+    for layer_id in range(nb_layers):
+        hidden_size = 500  # Deep NADE only used hidden layer of 500 units
+        fullnet_blueprint.append("{hidden_size}".format(hidden_size=hidden_size))
+
+    fullnet_blueprint.append("784")  # Output layer
+    fullnet_blueprint = "->".join(fullnet_blueprint)
+
+    return convnet_blueprint, fullnet_blueprint
+
+
 def build_launch_experiment_argsparser(subparser):
     DESCRIPTION = "Train a Deep Convolutional NADE model on a specific dataset using Theano."
 
@@ -47,7 +105,9 @@ def build_launch_experiment_argsparser(subparser):
 
     # NADE-like's hyperparameters
     model = p.add_argument_group("Convolutional Deep NADE")
-    model.add_argument('blueprint', type=str, help='blueprint of the layers e.g. "64@3x3(valid)->32@7x7(full)".')
+    model.add_argument('--convnet_blueprint', type=str, help='blueprint of the convolutional layers e.g. "64@3x3(valid)->32@7x7(full)".')
+    model.add_argument('--fullnet_blueprint', type=str, help='blueprint of the fully connected layers e.g. "500->784".')
+    model.add_argument('--blueprint_seed', type=int, help='seed used to generate random blueprints.')
     model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
     model.add_argument('--consider_mask_as_channel', action='store_true', help='consider the ordering mask as a another channel in the convolutional layer.')
     model.add_argument('--fully_connected_layer_size', type=int, help='size of the fully connected layer (from input to output). Default=0', default=0)
@@ -160,10 +220,22 @@ def main():
                                       nb_channels=dataset.nb_channels,
                                       ordering_seed=args.ordering_seed,
                                       consider_mask_as_channel=args.consider_mask_as_channel,
-                                      hidden_activation=args.hidden_activation,
-                                      fully_connected_layer_size=args.fully_connected_layer_size)
+                                      hidden_activation=args.hidden_activation)
 
-        model = builder.build_from_blueprint(args.blueprint)
+        if args.blueprint_seed is not None:
+            convnet_blueprint, fullnet_blueprint = generate_blueprints(args.blueprint_seed, dataset.image_shape[0])
+            print convnet_blueprint
+            print fullnet_blueprint
+            builder.build_convnet_from_blueprint(convnet_blueprint)
+            builder.build_fullnet_from_blueprint(fullnet_blueprint)
+        else:
+            if args.convnet_blueprint is not None:
+                builder.build_convnet_from_blueprint(args.convnet_blueprint)
+
+            if args.fullnet_blueprint is not None:
+                builder.build_fullnet_from_blueprint(args.fullnet_blueprint)
+
+        model = builder.build()
 
         from smartpy.misc import weights_initializer
         weights_initialization_method = weights_initializer.factory(**vars(args))
@@ -243,7 +315,8 @@ def main():
 
         from collections import OrderedDict
         log_entry = OrderedDict()
-        log_entry["Blueprint"] = args.blueprint
+        log_entry["Convnet Blueprint"] = args.convnet_blueprint
+        log_entry["Fullnet Blueprint"] = args.fullnet_blueprint
         log_entry["Mask as channel"] = model.hyperparams["consider_mask_as_channel"]
         log_entry["Activation Function"] = args.hidden_activation
         log_entry["Initialization Seed"] = args.initialization_seed
