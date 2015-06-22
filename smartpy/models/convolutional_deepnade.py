@@ -56,8 +56,8 @@ class MaxPoolDecorator(LayerDecorator):
         layer_infer_shape = layer.infer_shape
 
         def decorated_infer_shape(instance, input_shape):
-            output_shape = layer_infer_shape(input_shape)
-            output_shape = np.array(output_shape[2:]) / np.array(self.pool_shape)
+            input_shape = layer_infer_shape(input_shape)
+            output_shape = np.array(input_shape[2:]) / np.array(self.pool_shape)
             if self.ignore_border:
                 output_shape = np.floor(output_shape)
             else:
@@ -114,8 +114,8 @@ class UpSamplingDecorator(LayerDecorator):
         layer_infer_shape = layer.infer_shape
 
         def decorated_infer_shape(instance, input_shape):
-            output_shape = layer_infer_shape(input_shape)
-            output_shape = np.array(output_shape[2:]) * np.array(self.up_shape)
+            input_shape = layer_infer_shape(input_shape)
+            output_shape = np.array(input_shape[2:]) * np.array(self.up_shape)
             output_shape = input_shape[:2] + tuple(output_shape.astype(int))
             return output_shape
 
@@ -230,9 +230,58 @@ class ConvolutionalLayer(Layer):
         return output_shape
 
 
+class FullyConnectedLayer(Layer):
+    def __init__(self, input_size, hidden_size, activation="sigmoid"):
+        super(FullyConnectedLayer, self).__init__(size=hidden_size)
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.activation = activation
+        self.activation_fct = ACTIVATION_FUNCTIONS[self.activation]
+
+    def allocate(self):
+        # Allocating memory for parameters
+        W_shape = (self.input_size, self.hidden_size)
+        self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='W', borrow=True)
+        self.b = theano.shared(value=np.zeros(self.hidden_size, dtype=theano.config.floatX), name='b', borrow=True)
+        print W_shape
+
+    def initialize(self, weight_initializer):
+        if weight_initializer is None:
+            weight_initializer = WeightsInitializer().uniform
+
+        self.W.set_value(weight_initializer(self.W.get_value().shape))
+
+    @property
+    def hyperparams(self):
+        return {'input_size': self.input_size,
+                'hidden_size': self.hidden_size,
+                'activation': self.activation}
+
+    @property
+    def params(self):
+        return {'W': self.W,
+                'b': self.b}
+
+    def fprop(self, input, return_output_preactivation=False):
+        pre_output = T.dot(input, self.W) + self.b
+        output = self.activation_fct(pre_output)
+
+        if return_output_preactivation:
+            return output, pre_output
+
+        return output
+
+    def to_text(self):
+        return "{0}".format(self.hidden_size)
+
+    def infer_shape(self, input_shape):
+        return (input_shape[0], self.hidden_size)
+
+
 class DeepModel(Model):
-    def __init__(self, layers):
+    def __init__(self, layers, name=""):
         self.layers = layers
+        self.name = name
 
     def fprop(self, input, return_output_preactivation=False):
         output = input
@@ -249,7 +298,7 @@ class DeepModel(Model):
         hyperparams = {}
         for i, layer in enumerate(self.layers):
             for k, v in layer.hyperparams.items():
-                hyperparams["layer{0}_{1}".format(i, k)] = v
+                hyperparams[self.name + "layer{0}_{1}".format(i, k)] = v
 
         return hyperparams
 
@@ -259,7 +308,7 @@ class DeepModel(Model):
         for i, layer in enumerate(self.layers):
             for k, v in layer.params.items():
                 # TODO: Changing the variable name till first smartpy's PR is merged.
-                v.name = "layer{0}_{1}".format(i, k)
+                v.name = self.name + "layer{0}_{1}".format(i, k)
                 params[v.name] = v
 
         return params
@@ -282,59 +331,79 @@ class DeepModel(Model):
         return out_shape
 
 
-class DeepConvNADE(DeepModel):
+class DeepConvNADE(Model):
     def __init__(self,
                  image_shape,
                  nb_channels,
-                 layers,
+                 convnet_layers,
+                 fullnet_layers,
                  ordering_seed=1234,
                  consider_mask_as_channel=False,
                  fully_connected_layer_size=0):
-        super(DeepConvNADE, self).__init__(layers)
+        #super(DeepConvNADE, self).__init__()
+        self.has_convnet = len(convnet_layers) > 0
+        self.has_fullnet = len(fullnet_layers) > 0
+
+        self.convnet = DeepModel(convnet_layers, name="convnet_")
+        self.fullnet = DeepModel(fullnet_layers, name="fullnet_")
+
         self.image_shape = image_shape
         self.nb_channels = nb_channels
         self.ordering_seed = ordering_seed
         self.consider_mask_as_channel = consider_mask_as_channel
-        self.fully_connected_layer_size = fully_connected_layer_size
 
-        # Make sure the deep network outputs 'np.prod(image_shape)' units.
-        input_shape = (1, nb_channels) + image_shape
-        out_shape = self.infer_shape(input_shape)
-        if out_shape != (1, 1) + image_shape:
-            raise ValueError("Output shape mismatched: {} != {}".format(out_shape, (1, 1) + image_shape))
+        if self.has_convnet:
+            # Make sure the convolutional network outputs 'np.prod(image_shape)' units.
+            input_shape = (1, nb_channels) + image_shape
+            out_shape = self.convnet.infer_shape(input_shape)
+            if out_shape != (1, 1) + image_shape:
+                raise ValueError("(Convnet) Output shape mismatched: {} != {}".format(out_shape, (1, 1) + image_shape))
 
-        if self.fully_connected_layer_size > 0:
-            input_size = int(np.prod(self.image_shape))
-            if self.consider_mask_as_channel:
-                input_size *= 2
+        if self.fullnet:
+            # Make sure the fully connected network outputs 'np.prod(image_shape)' units.
+            input_shape = (1, int(np.prod(image_shape)))
+            out_shape = self.fullnet.infer_shape(input_shape)
+            if out_shape != (1, int(np.prod(image_shape))):
+                raise ValueError("(Fullnet) Output shape mismatched: {} != {}".format(out_shape, (1, int(np.prod(image_shape)))))
 
-            W_shape = (input_size, self.fully_connected_layer_size)
-            self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='fully_W', borrow=True)
-            self.bhid = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
+        # if self.fully_connected_layer_size > 0:
+        #     input_size = int(np.prod(self.image_shape))
+        #     if self.consider_mask_as_channel:
+        #         input_size *= 2
 
-            V_shape = (self.fully_connected_layer_size, int(np.prod(self.image_shape)))
-            self.V = theano.shared(value=np.zeros(V_shape, dtype=theano.config.floatX), name='fully_V', borrow=True)
-            self.bvis = theano.shared(value=np.zeros(int(np.prod(self.image_shape)), dtype=theano.config.floatX), name='fully_bvis', borrow=True)
+        #     W_shape = (input_size, self.fully_connected_layer_size)
+        #     self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='fully_W', borrow=True)
+        #     self.bhid = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
+
+        #     V_shape = (self.fully_connected_layer_size, int(np.prod(self.image_shape)))
+        #     self.V = theano.shared(value=np.zeros(V_shape, dtype=theano.config.floatX), name='fully_V', borrow=True)
+        #     self.bvis = theano.shared(value=np.zeros(int(np.prod(self.image_shape)), dtype=theano.config.floatX), name='fully_bvis', borrow=True)
 
     @property
     def hyperparams(self):
-        hyperparams = super(DeepConvNADE, self).hyperparams
+        #hyperparams = super(DeepConvNADE, self).hyperparams
+        hyperparams = {}
+        hyperparams.update(self.convnet.hyperparams)
+        hyperparams.update(self.fullnet.hyperparams)
         hyperparams['image_shape'] = self.image_shape
         hyperparams['nb_channels'] = self.nb_channels
         hyperparams['ordering_seed'] = self.ordering_seed
         hyperparams['consider_mask_as_channel'] = self.consider_mask_as_channel
-        hyperparams['fully_connected_layer_size'] = self.fully_connected_layer_size
+        #hyperparams['fully_connected_layer_size'] = self.fully_connected_layer_size
         return hyperparams
 
     @property
     def params(self):
-        params = super(DeepConvNADE, self).params
+        #params = super(DeepConvNADE, self).params
+        params = {}
+        params.update(self.convnet.params)
+        params.update(self.fullnet.params)
 
-        if self.fully_connected_layer_size > 0:
-            params[self.W.name] = self.W
-            params[self.V.name] = self.V
-            params[self.bhid.name] = self.bhid
-            #params[self.bvis.name] = self.bvis
+        # if self.fully_connected_layer_size > 0:
+        #     params[self.W.name] = self.W
+        #     params[self.V.name] = self.V
+        #     params[self.bhid.name] = self.bhid
+        #     #params[self.bvis.name] = self.bvis
 
         return params
 
@@ -343,15 +412,17 @@ class DeepConvNADE(DeepModel):
         """ TODO: choose between parameters or params """
         return self.params.values()
 
-    def initialize(self, weight_initializer):
+    def initialize(self, weight_initializer=None):
         if weight_initializer is None:
             weight_initializer = WeightsInitializer().uniform
 
-        super(DeepConvNADE, self).initialize(weight_initializer)
+        #super(DeepConvNADE, self).initialize(weight_initializer)
+        self.convnet.initialize(weight_initializer)
+        self.fullnet.initialize(weight_initializer)
 
-        if self.fully_connected_layer_size > 0:
-            self.W.set_value(weight_initializer(self.W.get_value().shape))
-            self.V.set_value(weight_initializer(self.V.get_value().shape))
+        # if self.fully_connected_layer_size > 0:
+        #     self.W.set_value(weight_initializer(self.W.get_value().shape))
+        #     self.V.set_value(weight_initializer(self.V.get_value().shape))
 
     def fprop(self, input, mask_o_lt_d, return_output_preactivation=False):
         """ Returns the theano graph that computes the fprop given an `input` and an `ordering`.
@@ -367,34 +438,39 @@ class DeepConvNADE(DeepModel):
             If 2D matrix, each images in the batch will have a different mask meaning that
             mask_o_lt_d.shape[0] == input.shape[0].
         """
-        input_masked = input * mask_o_lt_d
+        pre_output_convnet = 0
+        if self.has_convnet:
+            input_masked = input * mask_o_lt_d
 
-        nb_input_feature_maps = self.nb_channels
-        if self.consider_mask_as_channel:
-            nb_input_feature_maps += 1
-            if mask_o_lt_d.ndim == 1:
-                # TODO: changed this hack
-                input_masked = T.concatenate([input_masked, T.ones_like(input_masked)*mask_o_lt_d], axis=1)
-            else:
-                input_masked = T.concatenate([input_masked, mask_o_lt_d], axis=1)
+            nb_input_feature_maps = self.nb_channels
+            if self.consider_mask_as_channel:
+                nb_input_feature_maps += 1
+                if mask_o_lt_d.ndim == 1:
+                    # TODO: changed this hack
+                    input_masked = T.concatenate([input_masked, T.ones_like(input_masked)*mask_o_lt_d], axis=1)
+                else:
+                    input_masked = T.concatenate([input_masked, mask_o_lt_d], axis=1)
 
-        # Hack: input_masked is a 2D matrix instead of a 4D tensor, but we have all the information to fix that.
-        input_masked = input_masked.reshape((-1, nb_input_feature_maps) + self.image_shape)
+            # Hack: input_masked is a 2D matrix instead of a 4D tensor, but we have all the information to fix that.
+            input_masked = input_masked.reshape((-1, nb_input_feature_maps) + self.image_shape)
 
-        # fprop through all layers
-        _, pre_output = super(DeepConvNADE, self).fprop(input_masked, return_output_preactivation=True)
+            # fprop through all layers
+            #_, pre_output = super(DeepConvNADE, self).fprop(input_masked, return_output_preactivation=True)
+            _, pre_output = self.convnet.fprop(input_masked, return_output_preactivation=True)
 
-        # This will generate a matrix of shape (batch_size, nb_kernels * kernel_height * kernel_width).
-        pre_output_convnet = pre_output.flatten(2)
+            # This will generate a matrix of shape (batch_size, nb_kernels * kernel_height * kernel_width).
+            pre_output_convnet = pre_output.flatten(2)
 
         pre_output_fully = 0
-        if self.fully_connected_layer_size > 0:
+        if self.has_fullnet:
             input_masked_fully_connected = input * mask_o_lt_d
             if self.consider_mask_as_channel:
                 input_masked_fully_connected = T.concatenate([input_masked_fully_connected, mask_o_lt_d], axis=1)
 
-            fully_conn_hidden = T.nnet.sigmoid(T.dot(input_masked_fully_connected, self.W) + self.bhid)
-            pre_output_fully = T.dot(fully_conn_hidden, self.V)
+            _, pre_output_fully = self.fullnet.fprop(input_masked_fully_connected, return_output_preactivation=True)
+
+            #fully_conn_hidden = T.nnet.sigmoid(T.dot(input_masked_fully_connected, self.W) + self.bhid)
+            #pre_output_fully = T.dot(fully_conn_hidden, self.V)
 
         pre_output = pre_output_convnet + pre_output_fully
         output = T.nnet.sigmoid(pre_output)  # Force use of sigmoid for the output layer
@@ -504,9 +580,15 @@ class DeepConvNADE(DeepModel):
         return nll
 
     def __str__(self):
-        text = super(DeepConvNADE, self).__str__()
-        text += " -> output"
-        return text
+        text = ""
+
+        if self.has_convnet:
+            text += self.convnet.__str__() + " -> output\n"
+
+        if self.has_fullnet:
+            text += self.fullnet.__str__() + " -> output\n"
+
+        return text[:-1]  # Do not return last \n
 
 
 class DeepConvNADEBuilder(object):
@@ -515,56 +597,59 @@ class DeepConvNADEBuilder(object):
                  nb_channels,
                  ordering_seed=1234,
                  consider_mask_as_channel=False,
-                 hidden_activation="sigmoid",
-                 fully_connected_layer_size=0):
+                 hidden_activation="sigmoid"):
 
         self.image_shape = image_shape
         self.nb_channels = nb_channels
         self.ordering_seed = ordering_seed
         self.consider_mask_as_channel = consider_mask_as_channel
         self.hidden_activation = hidden_activation
-        self.fully_connected_layer_size = fully_connected_layer_size
 
-        self.layers = []
-        input_layer = Layer(size=self.nb_channels + self.consider_mask_as_channel, name="input")
-        self.stack(input_layer)
+        self.convnet_layers = []
+        self.fullnet_layers = []
 
-    def stack(self, layer):
+    def stack(self, layer, layers):
         # Connect layers, if needed
-        if len(self.layers) > 0:
-            self.layers[-1].next_layer = layer
-            layer.prev_layer = self.layers[-1]
+        if len(layers) > 0:
+            layers[-1].next_layer = layer
+            layer.prev_layer = layers[-1]
 
-        self.layers.append(layer)
+        layers.append(layer)
 
     def build(self):
-        for layer in self.layers:
+        for layer in self.convnet_layers:
+            layer.allocate()
+
+        for layer in self.fullnet_layers:
             layer.allocate()
 
         model = DeepConvNADE(image_shape=self.image_shape,
                              nb_channels=self.nb_channels,
-                             layers=self.layers,
+                             convnet_layers=self.convnet_layers,
+                             fullnet_layers=self.fullnet_layers,
                              ordering_seed=self.ordering_seed,
-                             consider_mask_as_channel=self.consider_mask_as_channel,
-                             fully_connected_layer_size=self.fully_connected_layer_size)
+                             consider_mask_as_channel=self.consider_mask_as_channel)
 
         return model
 
-    def build_from_blueprint(self, blueprint):
+    def build_convnet_from_blueprint(self, blueprint):
         """
         Example:
         64@5x5(valid) -> max@2x2 -> 256@2x2(valid) -> 256@2x2(full) -> up@2x2 -> 64@5x5(full)
         """
+        input_layer = Layer(size=self.nb_channels + self.consider_mask_as_channel, name="convnet_input")
+        self.stack(input_layer, self.convnet_layers)
+
         layers_blueprint = map(str.strip, blueprint.split("->"))
 
         for layer_blueprint in layers_blueprint:
             infos = layer_blueprint.lower().split("@")
             if infos[0] == "max":
                 pool_shape = tuple(map(int, infos[1].split("x")))
-                MaxPoolDecorator(pool_shape).decorate(self.layers[-1])
+                MaxPoolDecorator(pool_shape).decorate(self.convnet_layers[-1])
             elif infos[0] == "up":
                 up_shape = tuple(map(int, infos[1].split("x")))
-                UpSamplingDecorator(up_shape).decorate(self.layers[-1])
+                UpSamplingDecorator(up_shape).decorate(self.convnet_layers[-1])
             else:
                 nb_filters = int(infos[0])
                 if "valid" in infos[1]:
@@ -579,9 +664,25 @@ class DeepConvNADEBuilder(object):
                                            filter_shape=filter_shape,
                                            border_mode=border_mode,
                                            activation=self.hidden_activation)
-                self.stack(layer)
+                self.stack(layer, self.convnet_layers)
 
-        return self.build()
+    def build_fullnet_from_blueprint(self, blueprint):
+        """
+        Example:
+        500 -> 256 -> 300 -> 784
+        """
+        input_layer = Layer(size=int(np.prod(self.image_shape)) * 2**int(self.consider_mask_as_channel), name="fullnet_input")
+        self.stack(input_layer, self.fullnet_layers)
+
+        layers_blueprint = map(str.strip, blueprint.split("->"))
+
+        for layer_blueprint in layers_blueprint:
+            hidden_size = int(layer_blueprint)
+
+            layer = FullyConnectedLayer(input_size=self.fullnet_layers[-1].size,
+                                        hidden_size=hidden_size,
+                                        activation=self.hidden_activation)
+            self.stack(layer, self.fullnet_layers)
 
 #
 # TASKS
