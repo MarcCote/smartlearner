@@ -9,6 +9,7 @@ from time import time
 
 import theano
 from smartpy.misc import utils
+from smartpy.trainers.status import Status
 
 
 class StoppingCriterion(object):
@@ -59,7 +60,7 @@ class View(Task):
         self.value = None
         self.last_update = -1
 
-    def view(self, status):
+    def view(self, status=Status()):
         if self.last_update != status.current_update:
             self.update(status)
             self.last_update = status.current_update

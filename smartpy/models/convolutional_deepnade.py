@@ -1,5 +1,6 @@
 from __future__ import division
 
+import re
 import pickle
 import theano
 import theano.tensor as T
@@ -16,6 +17,66 @@ from smartpy.misc.weights_initializer import WeightsInitializer
 from abc import ABCMeta, abstractmethod
 from types import MethodType
 from time import time
+
+from smartpy.misc.utils import load_dict_from_json_file
+
+
+def generate_blueprints(seed, image_shape):
+    rng = np.random.RandomState(seed)
+
+    # Generate convoluational layers blueprint
+    convnet_blueprint = []
+    convnet_blueprint_inverse = []  # We want convnet to be symmetrical
+    nb_layers = rng.randint(1, 5+1)
+    layer_id_first_conv = -1
+    for layer_id in range(nb_layers):
+        if image_shape <= 2:
+            # Too small
+            continue
+
+        if rng.rand() <= 0.8:
+            # 70% of the time do a convolution
+            nb_filters = rng.choice([16, 32, 64, 128, 256, 512])
+            filter_shape = rng.randint(2, min(image_shape, 8+1))
+            image_shape = image_shape-filter_shape+1
+
+            filter_shape = (filter_shape, filter_shape)
+            convnet_blueprint.append("{nb_filters}@{filter_shape}(valid)".format(nb_filters=nb_filters,
+                                                                                 filter_shape="x".join(map(str, filter_shape))))
+            convnet_blueprint_inverse.append("{nb_filters}@{filter_shape}(full)".format(nb_filters=nb_filters,
+                                                                                        filter_shape="x".join(map(str, filter_shape))))
+            if layer_id_first_conv == -1:
+                layer_id_first_conv = layer_id
+        else:
+            # 30% of the time do a max pooling
+            pooling_shape = rng.randint(2, 5+1)
+            while not image_shape % pooling_shape == 0:
+                pooling_shape = rng.randint(2, 5+1)
+
+            image_shape = image_shape / pooling_shape
+            #pooling_shape = 2  # For now, we limit ourselves to pooling of 2x2
+            pooling_shape = (pooling_shape, pooling_shape)
+            convnet_blueprint.append("max@{pooling_shape}".format(pooling_shape="x".join(map(str, pooling_shape))))
+            convnet_blueprint_inverse.append("up@{pooling_shape}".format(pooling_shape="x".join(map(str, pooling_shape))))
+
+    # Need to make sure there is only one channel in output
+    infos = convnet_blueprint_inverse[layer_id_first_conv].split("@")[-1]
+    convnet_blueprint_inverse[layer_id_first_conv] = "1@" + infos
+
+    # Connect first part and second part of the convnet
+    convnet_blueprint = "->".join(convnet_blueprint) + "->" + "->".join(convnet_blueprint_inverse[::-1])
+
+    # Generate fully connected layers blueprint
+    fullnet_blueprint = []
+    nb_layers = rng.randint(1, 4+1)  # Deep NADE only used up to 4 hidden layers
+    for layer_id in range(nb_layers):
+        hidden_size = 500  # Deep NADE only used hidden layer of 500 units
+        fullnet_blueprint.append("{hidden_size}".format(hidden_size=hidden_size))
+
+    fullnet_blueprint.append("784")  # Output layer
+    fullnet_blueprint = "->".join(fullnet_blueprint)
+
+    return convnet_blueprint, fullnet_blueprint
 
 
 class LayerDecorator(object):
@@ -338,8 +399,7 @@ class DeepConvNADE(Model):
                  convnet_layers,
                  fullnet_layers,
                  ordering_seed=1234,
-                 consider_mask_as_channel=False,
-                 fully_connected_layer_size=0):
+                 consider_mask_as_channel=False):
         #super(DeepConvNADE, self).__init__()
         self.has_convnet = len(convnet_layers) > 0
         self.has_fullnet = len(fullnet_layers) > 0
@@ -366,19 +426,6 @@ class DeepConvNADE(Model):
             if out_shape != (1, int(np.prod(image_shape))):
                 raise ValueError("(Fullnet) Output shape mismatched: {} != {}".format(out_shape, (1, int(np.prod(image_shape)))))
 
-        # if self.fully_connected_layer_size > 0:
-        #     input_size = int(np.prod(self.image_shape))
-        #     if self.consider_mask_as_channel:
-        #         input_size *= 2
-
-        #     W_shape = (input_size, self.fully_connected_layer_size)
-        #     self.W = theano.shared(value=np.zeros(W_shape, dtype=theano.config.floatX), name='fully_W', borrow=True)
-        #     self.bhid = theano.shared(value=np.zeros(self.fully_connected_layer_size, dtype=theano.config.floatX), name='fully_bhid', borrow=True)
-
-        #     V_shape = (self.fully_connected_layer_size, int(np.prod(self.image_shape)))
-        #     self.V = theano.shared(value=np.zeros(V_shape, dtype=theano.config.floatX), name='fully_V', borrow=True)
-        #     self.bvis = theano.shared(value=np.zeros(int(np.prod(self.image_shape)), dtype=theano.config.floatX), name='fully_bvis', borrow=True)
-
     @property
     def hyperparams(self):
         #hyperparams = super(DeepConvNADE, self).hyperparams
@@ -389,7 +436,6 @@ class DeepConvNADE(Model):
         hyperparams['nb_channels'] = self.nb_channels
         hyperparams['ordering_seed'] = self.ordering_seed
         hyperparams['consider_mask_as_channel'] = self.consider_mask_as_channel
-        #hyperparams['fully_connected_layer_size'] = self.fully_connected_layer_size
         return hyperparams
 
     @property
@@ -398,13 +444,6 @@ class DeepConvNADE(Model):
         params = {}
         params.update(self.convnet.params)
         params.update(self.fullnet.params)
-
-        # if self.fully_connected_layer_size > 0:
-        #     params[self.W.name] = self.W
-        #     params[self.V.name] = self.V
-        #     params[self.bhid.name] = self.bhid
-        #     #params[self.bvis.name] = self.bvis
-
         return params
 
     @property
@@ -419,10 +458,6 @@ class DeepConvNADE(Model):
         #super(DeepConvNADE, self).initialize(weight_initializer)
         self.convnet.initialize(weight_initializer)
         self.fullnet.initialize(weight_initializer)
-
-        # if self.fully_connected_layer_size > 0:
-        #     self.W.set_value(weight_initializer(self.W.get_value().shape))
-        #     self.V.set_value(weight_initializer(self.V.get_value().shape))
 
     def fprop(self, input, mask_o_lt_d, return_output_preactivation=False):
         """ Returns the theano graph that computes the fprop given an `input` and an `ordering`.
@@ -465,7 +500,10 @@ class DeepConvNADE(Model):
         if self.has_fullnet:
             input_masked_fully_connected = input * mask_o_lt_d
             if self.consider_mask_as_channel:
-                input_masked_fully_connected = T.concatenate([input_masked_fully_connected, mask_o_lt_d], axis=1)
+                if mask_o_lt_d.ndim == 1:
+                    input_masked_fully_connected = T.concatenate([input_masked_fully_connected, T.ones_like(input_masked_fully_connected)*mask_o_lt_d], axis=1)
+                else:
+                    input_masked_fully_connected = T.concatenate([input_masked_fully_connected, mask_o_lt_d], axis=1)
 
             _, pre_output_fully = self.fullnet.fprop(input_masked_fully_connected, return_output_preactivation=True)
 
@@ -589,6 +627,43 @@ class DeepConvNADE(Model):
             text += self.fullnet.__str__() + " -> output\n"
 
         return text[:-1]  # Do not return last \n
+
+    @classmethod
+    def create(cls, loaddir="./", hyperparams_filename="hyperparams", params_filename="params"):
+        hyperparams = load_dict_from_json_file(pjoin(loaddir, hyperparams_filename + ".json"))
+
+        hidden_activation = [v for k, v in hyperparams.items() if "activation" in k][0]
+        builder = DeepConvNADEBuilder(image_shape=hyperparams["image_shape"],
+                                      nb_channels=hyperparams["nb_channels"],
+                                      ordering_seed=hyperparams["ordering_seed"],
+                                      consider_mask_as_channel=hyperparams["consider_mask_as_channel"],
+                                      hidden_activation=hidden_activation)
+
+        # Rebuild convnet layers
+        layers_id = set()
+        for k, v in hyperparams.items():
+            if k.startswith("convnet_layer"):
+                layer_id = int(re.findall("convnet_layer([0-9]+)_", k)[0])
+                layers_id.add(layer_id)
+
+        convnet_blueprint = ""
+        for layer_id in sorted(layers_id):
+            border_mode = hyperparams["convnet_layer{}_border_mode".format(layer_id)]
+            nb_filters = hyperparams["convnet_layer{}_nb_filters".format(layer_id)]
+            filter_shape = tuple(hyperparams["convnet_layer{}_filter_shape".format(layer_id)])
+            convnet_blueprint += ""
+
+        # Rebuild fullnet layers
+
+        if args.convnet_blueprint is not None:
+            builder.build_convnet_from_blueprint(convnet_blueprint)
+
+        if args.fullnet_blueprint is not None:
+            builder.build_fullnet_from_blueprint(args.fullnet_blueprint)
+
+        model = builder.build()
+        model.load(loaddir, params_filename)
+        return model
 
 
 class DeepConvNADEBuilder(object):
@@ -766,6 +841,116 @@ class EvaluateDeepNadeNLLEstimate(Evaluate):
         return ItemGetter(self, attribute=1)
 
 
+class EvaluateDeepNadeNLLParallel(Evaluate):
+    """ This tasks compute the mean/stderr NLL (averaged across multiple orderings) for a Deep NADE model.
+
+    Notes
+    -----
+    This is slow but tractable.
+    """
+
+    def __init__(self, conv_nade, dataset,
+                 batch_size=None, no_part=1, nb_parts=1,
+                 ordering=None, nb_orderings=8, orderings_seed=None):
+
+        print "Part: {}/{}".format(no_part, nb_parts)
+        part_size = int(np.ceil(len(dataset.get_value()) / nb_parts))
+        dataset = dataset.get_value()[(no_part-1)*part_size:no_part*part_size]
+
+        dataset = theano.shared(dataset, name='dataset', borrow=True)
+
+        if batch_size is None:
+            batch_size = len(dataset.get_value())
+
+        #batch_size = min(batch_size, part_size)
+        nb_batches = int(np.ceil(len(dataset.get_value()) / batch_size))
+
+        # Generate the orderings that will be used to evaluate the Deep NADE model.
+        D = dataset.get_value().shape[1]
+        orderings = []
+        if orderings_seed is None:
+            base_ordering = np.arange(D).reshape(conv_nade.image_shape)
+            # 8 trivial orderings
+            # Top-left to bottom-right (row-major)
+            orderings.append(base_ordering.flatten("C"))
+            # Top-right to bottom-left (row-major)
+            orderings.append(base_ordering[:, ::-1].flatten("C"))
+            # Bottom-left to top-right (row-major)
+            orderings.append(base_ordering[::-1, :].flatten("C"))
+            # Bottom-right to top-left (row-major)
+            orderings.append(base_ordering[::-1, ::-1].flatten("C"))
+            # Top-left to bottom-right (column-major)
+            orderings.append(base_ordering.flatten("F"))
+            # Top-right to bottom-left (column-major)
+            orderings.append(base_ordering[:, ::-1].flatten("F"))
+            # Bottom-left to top-right (column-major)
+            orderings.append(base_ordering[::-1, :].flatten("F"))
+            # Bottom-right to top-left (column-major)
+            orderings.append(base_ordering[::-1, ::-1].flatten("F"))
+        else:
+            rng = np.random.RandomState(orderings_seed)
+            for i in range(nb_orderings):
+                ordering = np.arange(D)
+                rng.shuffle(ordering)
+                orderings.append(ordering)
+
+        if ordering is not None:
+            orderings = [orderings[ordering]]
+
+        masks_o_d = theano.shared(np.array([], ndmin=2, dtype=theano.config.floatX), name='masks_o_d', borrow=True)
+        masks_o_lt_d = theano.shared(np.array([], ndmin=2, dtype=theano.config.floatX), name='masks_o_lt_d', borrow=True)
+
+        # Build theano function
+        # $X$: batch of inputs (flatten images)
+        input = T.matrix('input')
+        # $o_d$: index of d-th dimension in the ordering.
+        mask_o_d = T.vector('mask_o_d')
+        # $o_{<d}$: indices of the d-1 first dimensions in the ordering.
+        mask_o_lt_d = T.vector('mask_o_lt_d')
+
+        lnp_x_o_d_given_x_o_lt_d = conv_nade.lnp_x_o_d_given_x_o_lt_d(input, mask_o_d, mask_o_lt_d)
+
+        no_batch = T.iscalar('no_batch')
+        d = T.iscalar('d')
+        givens = {input: dataset[no_batch * batch_size:(no_batch + 1) * batch_size],
+                  mask_o_d: masks_o_d[d],
+                  mask_o_lt_d: masks_o_lt_d[d]}
+        compute_lnp_x_o_d_given_x_o_lt_d = theano.function([no_batch, d], lnp_x_o_d_given_x_o_lt_d, givens=givens, name="nll_of_x_o_d_given_x_o_lt_d")
+        #theano.printing.pydotprint(compute_lnp_x_o_d_given_x_o_lt_d, '{0}_compute_lnp_x_o_d_given_x_o_lt_d_{1}'.format(conv_nade.__class__.__name__, theano.config.device), with_ids=True)
+
+        def _nll():
+            nlls = -np.inf * np.ones(len(dataset.get_value()))
+            for o, ordering in enumerate(orderings):
+                o_d = np.zeros((D, D), dtype=theano.config.floatX)
+                o_d[np.arange(D), ordering] = 1
+                masks_o_d.set_value(o_d)
+
+                o_lt_d = np.cumsum(o_d, axis=0)
+                o_lt_d[1:] = o_lt_d[:-1]
+                o_lt_d[0, :] = 0
+                masks_o_lt_d.set_value(o_lt_d)
+
+                for i in range(nb_batches):
+                    print "Batch: {0}/{1}".format(i+1, nb_batches)
+                    ln_dth_conditionals = []
+                    start = time()
+                    for d in range(D):
+                        if d % 100 == 0:
+                            print "{0}/{1} dth conditional ({2:.2f} sec.)".format(d, D, time()-start)
+                            start = time()
+
+                        ln_dth_conditionals.append(compute_lnp_x_o_d_given_x_o_lt_d(i, d))
+
+                    # We average p(x) on different orderings, if needed.
+                    nlls[i*batch_size:(i+1)*batch_size] = np.logaddexp(nlls[i*batch_size:(i+1)*batch_size],
+                                                                       -np.sum(np.vstack(ln_dth_conditionals).T, axis=1))
+
+            nlls -= np.log(len(orderings))  # Average across all orderings
+            return nlls
+
+        super(EvaluateDeepNadeNLLParallel, self).__init__(_nll)
+
+
 class EvaluateDeepNadeNLL(Evaluate):
     """ This tasks compute the mean/stderr NLL (averaged across multiple orderings) for a Deep NADE model.
 
@@ -787,12 +972,35 @@ class EvaluateDeepNadeNLL(Evaluate):
 
         # Generate the orderings that will be used to evaluate the Deep NADE model.
         D = dataset_shared.get_value().shape[1]
-        rng = np.random.RandomState(ordering_seed)
         orderings = []
-        for i in range(nb_orderings):
-            ordering = np.arange(D)
-            rng.shuffle(ordering)
-            orderings.append(ordering)
+        if nb_orderings > 0:
+            rng = np.random.RandomState(ordering_seed)
+            for i in range(nb_orderings):
+                ordering = np.arange(D)
+                rng.shuffle(ordering)
+                orderings.append(ordering)
+
+        elif nb_orderings == 0:
+            base_ordering = np.arange(D).reshape(conv_nade.image_shape)
+            # 8 trivial orderings
+            # Top-left to bottom-right (row-major)
+            orderings.append(base_ordering.flatten("C"))
+            # Top-right to bottom-left (row-major)
+            orderings.append(base_ordering[:, ::-1].flatten("C"))
+            # Bottom-left to top-right (row-major)
+            orderings.append(base_ordering[::-1, :].flatten("C"))
+            # Bottom-right to top-left (row-major)
+            orderings.append(base_ordering[::-1, ::-1].flatten("C"))
+            # Top-left to bottom-right (column-major)
+            orderings.append(base_ordering.flatten("F"))
+            # Top-right to bottom-left (column-major)
+            orderings.append(base_ordering[:, ::-1].flatten("F"))
+            # Bottom-left to top-right (column-major)
+            orderings.append(base_ordering[::-1, :].flatten("F"))
+            # Bottom-right to top-left (column-major)
+            orderings.append(base_ordering[::-1, ::-1].flatten("F"))
+        else:
+            raise ValueError("Unknown value for 'nb_orderings': {0}".format(nb_orderings))
 
         masks_o_d = theano.shared(np.array([], ndmin=2, dtype=theano.config.floatX), name='masks_o_d', borrow=True)
         masks_o_lt_d = theano.shared(np.array([], ndmin=2, dtype=theano.config.floatX), name='masks_o_lt_d', borrow=True)
@@ -832,7 +1040,7 @@ class EvaluateDeepNadeNLL(Evaluate):
                     ln_dth_conditionals = []
                     start = time()
                     for d in range(D):
-                        if d % 10 == 0:
+                        if d % 100 == 0:
                             print "{0}/{1} dth conditional ({2:.2f} sec.)".format(d, D, time()-start)
                             start = time()
 

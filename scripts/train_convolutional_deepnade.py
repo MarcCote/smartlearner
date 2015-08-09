@@ -110,7 +110,6 @@ def build_launch_experiment_argsparser(subparser):
     model.add_argument('--blueprint_seed', type=int, help='seed used to generate random blueprints.')
     model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
     model.add_argument('--consider_mask_as_channel', action='store_true', help='consider the ordering mask as a another channel in the convolutional layer.')
-    model.add_argument('--fully_connected_layer_size', type=int, help='size of the fully connected layer (from input to output). Default=0', default=0)
 
     model.add_argument('--hidden_activation', type=str, help="Activation functions: {}".format(ACTIVATION_FUNCTIONS.keys()), choices=ACTIVATION_FUNCTIONS.keys(), default=ACTIVATION_FUNCTIONS.keys()[0])
     model.add_argument('--weights_initialization', type=str, help='which type of initialization to use when creating weights [{0}].'.format(", ".join(WEIGHTS_INITIALIZERS)), default=WEIGHTS_INITIALIZERS[0], choices=WEIGHTS_INITIALIZERS)
@@ -298,7 +297,6 @@ def main():
     with utils.Timer("Reporting"):
         # Evaluate model on train, valid and test sets
         nll_train = EvaluateDeepNadeNLLEstimate(model, dataset.trainset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
-
         nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
         nll_test = EvaluateDeepNadeNLLEstimate(model, dataset.testset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
 
