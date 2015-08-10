@@ -6,6 +6,7 @@ import os
 # Hack when having multiple clone of smartpy repo like a do.
 sys.path = [os.path.abspath(os.path.join(__file__, '..', '..'))] + sys.path
 
+import re
 import pickle
 from collections import OrderedDict
 import argparse
@@ -122,7 +123,7 @@ def evaluate(args):
         #eval model_name/ eval --dataset testset --part [1:11]/10 --ordering [0:8]
         nll_evaluation = EvaluateDeepNadeNLLParallel(convnade, subset,
                                                      batch_size=args.batch_size, no_part=no_part, nb_parts=nb_parts,
-                                                     ordering=args.ordering, nb_orderings=args.nb_orderings, orderings_seed=args.orderings_seed)
+                                                     no_ordering=args.ordering, nb_orderings=args.nb_orderings, orderings_seed=args.orderings_seed)
         nlls = nll_evaluation.view()
 
         # Save [partial] evaluation results.
@@ -143,7 +144,61 @@ def evaluate(args):
 
 
 def report(args):
-    pass
+    evaluation_folder = pjoin(args.experiment, "evaluation")
+    evaluation_files = os.listdir(evaluation_folder)
+    _, nb_parts, _, nb_orderings = map(int, re.findall("part([0-9]+)of([0-9]+)_ordering([0-9]+)of([0-9]+)", evaluation_files[0])[0])
+
+    template = "{subset}_part{no_part}of{nb_parts}_ordering{no_ordering}of{nb_orderings}.npy"
+
+    # Check if we miss some evaluation results
+    nb_results_missing = 0
+    for subset in ["validset", "testset"]:
+        for no_ordering in range(nb_orderings):
+            for no_part in range(1, nb_parts+1):
+                name = template.format(subset=subset,
+                                       no_part=no_part, nb_parts=nb_parts,
+                                       no_ordering=no_ordering, nb_orderings=nb_orderings)
+
+                if name not in evaluation_files:
+                    nb_results_missing += 1
+                    print "Missing: ", name
+
+    #if nb_results_missing > 0:
+    #    print "Missing {} result(s). Terminating...".format(nb_results_missing)
+    #    return
+
+    # Merge results
+    def _nll_mean_stderr(subset):
+        nlls = []
+        for no_part in range(1, nb_parts+1):
+            nlls_part = []
+            try:
+                for no_ordering in range(nb_orderings):
+                    name = template.format(subset=subset,
+                                           no_part=no_part, nb_parts=nb_parts,
+                                           no_ordering=no_ordering, nb_orderings=nb_orderings)
+
+                    from ipdb import set_trace as dbg
+                    dbg()
+                    nlls_part.append(np.load(pjoin(evaluation_folder, name)))
+            except:
+                pass
+
+            nlls_part = np.logaddexp.reduce(nlls_part, axis=0)
+            nlls_part -= np.log(nb_orderings)  # Average across all orderings
+            nlls.append(nlls_part)
+
+        nlls = np.hstack(nlls)
+        return round(nlls.mean(), 6), round(nlls.std() / np.sqrt(nlls.shape[0]), 6)
+
+    # Compute NLL mean and NLL stderror on validset and testset.
+    validset_mean, validset_stderr = _nll_mean_stderr("validset")
+    print "Validation NLL:", validset_mean
+    print "Validation NLL std:", validset_stderr
+
+    testset_mean, testset_stderr = _nll_mean_stderr("testset")
+    print "Testing NLL:", testset_mean
+    print "Testing NLL std:", testset_stderr
 
 
 def main():

@@ -851,7 +851,7 @@ class EvaluateDeepNadeNLLParallel(Evaluate):
 
     def __init__(self, conv_nade, dataset,
                  batch_size=None, no_part=1, nb_parts=1,
-                 ordering=None, nb_orderings=8, orderings_seed=None):
+                 no_ordering=None, nb_orderings=8, orderings_seed=None):
 
         print "Part: {}/{}".format(no_part, nb_parts)
         part_size = int(np.ceil(len(dataset.get_value()) / nb_parts))
@@ -894,8 +894,8 @@ class EvaluateDeepNadeNLLParallel(Evaluate):
                 rng.shuffle(ordering)
                 orderings.append(ordering)
 
-        if ordering is not None:
-            orderings = [orderings[ordering]]
+        if no_ordering is not None:
+            orderings = [orderings[no_ordering]]
 
         masks_o_d = theano.shared(np.array([], ndmin=2, dtype=theano.config.floatX), name='masks_o_d', borrow=True)
         masks_o_lt_d = theano.shared(np.array([], ndmin=2, dtype=theano.config.floatX), name='masks_o_lt_d', borrow=True)
