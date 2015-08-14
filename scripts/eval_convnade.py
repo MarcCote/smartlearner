@@ -47,6 +47,8 @@ def build_eval_argsparser(subparser):
 def build_report_argsparser(subparser):
     DESCRIPTION = 'Report results of the evaluation.'
     p = subparser.add_parser("report", description=DESCRIPTION, help=DESCRIPTION)
+    p.add_argument('--ignore',  action='store_true', help='ignore missing orderings')
+    p.add_argument('-v', '--verbose', action='store_true', help='print average NLL per ordering')
     # TODO: add stuff to upload results in a CSV file.
     # TODO: add stuff to upload results in a GSheet.
     #p.add_argument('--gsheet', type=str, metavar="SHEET_ID EMAIL PASSWORD", help="log results into a Google's Spreadsheet.")
@@ -151,54 +153,86 @@ def report(args):
     template = "{subset}_part{no_part}of{nb_parts}_ordering{no_ordering}of{nb_orderings}.npy"
 
     # Check if we miss some evaluation results
+    orderings = {"validset": [], "testset": []}
     nb_results_missing = 0
     for subset in ["validset", "testset"]:
         for no_ordering in range(nb_orderings):
+            is_missing_part = False
             for no_part in range(1, nb_parts+1):
                 name = template.format(subset=subset,
                                        no_part=no_part, nb_parts=nb_parts,
                                        no_ordering=no_ordering, nb_orderings=nb_orderings)
 
                 if name not in evaluation_files:
+                    is_missing_part = True
                     nb_results_missing += 1
                     print "Missing: ", name
 
-    #if nb_results_missing > 0:
-    #    print "Missing {} result(s). Terminating...".format(nb_results_missing)
-    #    return
+            if not is_missing_part:
+                orderings[subset].append(no_ordering)
+
+    if nb_results_missing > 0:
+        print "Missing {} result(s). Terminating...".format(nb_results_missing)
+        if not args.ignore:
+            return
 
     # Merge results
     def _nll_mean_stderr(subset):
         nlls = []
+        # Examples have been split in multiple parts.
         for no_part in range(1, nb_parts+1):
             nlls_part = []
-            try:
-                for no_ordering in range(nb_orderings):
-                    name = template.format(subset=subset,
-                                           no_part=no_part, nb_parts=nb_parts,
-                                           no_ordering=no_ordering, nb_orderings=nb_orderings)
+            for no_ordering in orderings[subset]:
+                name = template.format(subset=subset,
+                                       no_part=no_part, nb_parts=nb_parts,
+                                       no_ordering=no_ordering, nb_orderings=nb_orderings)
 
-                    from ipdb import set_trace as dbg
-                    dbg()
-                    nlls_part.append(np.load(pjoin(evaluation_folder, name)))
-            except:
-                pass
+                # Load the NLLs for a given part and a given ordering.
+                nlls_part.append(np.load(pjoin(evaluation_folder, name)))
 
-            nlls_part = np.logaddexp.reduce(nlls_part, axis=0)
-            nlls_part -= np.log(nb_orderings)  # Average across all orderings
+            # Average the probabilities across the orderings independently for each example.
+            nlls_part = -np.logaddexp.reduce(-np.array(nlls_part), axis=0)
+            nlls_part += np.log(len(orderings[subset]))  # Average across all orderings
             nlls.append(nlls_part)
 
+        # Concatenate every part together.
         nlls = np.hstack(nlls)
         return round(nlls.mean(), 6), round(nlls.std() / np.sqrt(nlls.shape[0]), 6)
 
+    def _nll_per_ordering(subset, no_ordering):
+        nlls = []
+        # Examples have been split in multiple parts.
+        for no_part in range(1, nb_parts+1):
+            name = template.format(subset=subset,
+                                   no_part=no_part, nb_parts=nb_parts,
+                                   no_ordering=no_ordering, nb_orderings=nb_orderings)
+
+            # Load the NLLs for a given part and a given ordering.
+            nlls_part = np.load(pjoin(evaluation_folder, name))
+            nlls.append(nlls_part)
+
+        # Concatenate every part together.
+        nlls = np.hstack(nlls)
+        return nlls.mean()
+
     # Compute NLL mean and NLL stderror on validset and testset.
     validset_mean, validset_stderr = _nll_mean_stderr("validset")
+    print "\nUsing {} orderings.".format(len(orderings["validset"]))
     print "Validation NLL:", validset_mean
     print "Validation NLL std:", validset_stderr
+    if args.verbose:
+        nlls_mean_per_ordering = map(lambda o: _nll_per_ordering("validset", o), orderings["validset"])
+        print "NLLs mean per ordering (validset):"
+        print "\n".join(["#{}: {}".format(o, nll_mean) for nll_mean, o in zip(nlls_mean_per_ordering, orderings["validset"])])
 
     testset_mean, testset_stderr = _nll_mean_stderr("testset")
+    print "\nUsing {} orderings.".format(len(orderings["testset"]))
     print "Testing NLL:", testset_mean
     print "Testing NLL std:", testset_stderr
+    if args.verbose:
+        nlls_mean_per_ordering = map(lambda o: _nll_per_ordering("testset", o), orderings["testset"])
+        print "NLLs mean per ordering (testset):"
+        print "\n".join(["#{}: {}".format(o, nll_mean) for nll_mean, o in zip(nlls_mean_per_ordering, orderings["testset"])])
 
 
 def main():

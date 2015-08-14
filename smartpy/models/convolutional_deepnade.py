@@ -941,6 +941,9 @@ class EvaluateDeepNadeNLLParallel(Evaluate):
 
                         ln_dth_conditionals.append(compute_lnp_x_o_d_given_x_o_lt_d(i, d))
 
+                    from ipdb import set_trace as dbg
+                    dbg()
+
                     # We average p(x) on different orderings, if needed.
                     nlls[i*batch_size:(i+1)*batch_size] = np.logaddexp(nlls[i*batch_size:(i+1)*batch_size],
                                                                        -np.sum(np.vstack(ln_dth_conditionals).T, axis=1))
