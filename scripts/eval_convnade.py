@@ -8,15 +8,12 @@ sys.path = [os.path.abspath(os.path.join(__file__, '..', '..'))] + sys.path
 
 import re
 import pickle
-from collections import OrderedDict
 import argparse
 import numpy as np
 from os.path import join as pjoin
 
 
 from smartpy.misc import utils
-from smartpy.trainers import tasks, Status
-from smartpy.models.convolutional_deepnade import DeepConvNADE as ConvNADE
 from smartpy.misc.dataset import UnsupervisedDataset as Dataset
 from smartpy.misc.utils import load_dict_from_json_file
 
@@ -66,11 +63,7 @@ def buildArgsParser():
     return p
 
 
-def evaluate(args):
-    evaluation_folder = pjoin(args.experiment, "evaluation")
-    if not os.path.isdir(evaluation_folder):
-        os.mkdir(evaluation_folder)
-
+def load_model(args):
     with utils.Timer("Loading model"):
         hyperparams = load_dict_from_json_file(pjoin(args.experiment, "hyperparams.json"))
 
@@ -100,8 +93,6 @@ def evaluate(args):
 
         if blueprint_seed is not None:
             convnet_blueprint, fullnet_blueprint = generate_blueprints(blueprint_seed, image_shape[0])
-            print convnet_blueprint
-            print fullnet_blueprint
             builder.build_convnet_from_blueprint(convnet_blueprint)
             builder.build_fullnet_from_blueprint(fullnet_blueprint)
         else:
@@ -111,8 +102,20 @@ def evaluate(args):
             if fullnet_blueprint is not None:
                 builder.build_fullnet_from_blueprint(fullnet_blueprint)
 
+        print convnet_blueprint
+        print fullnet_blueprint
         convnade = builder.build()
         convnade.load(args.experiment)
+
+    return convnade
+
+
+def evaluate(args):
+    evaluation_folder = pjoin(args.experiment, "evaluation")
+    if not os.path.isdir(evaluation_folder):
+        os.mkdir(evaluation_folder)
+
+    convnade = load_model(args)
 
     with utils.Timer("Loading dataset"):
         dataset = Dataset(args.dataset)
@@ -146,6 +149,8 @@ def evaluate(args):
 
 
 def report(args):
+    load_model(args)  # Just so the model blueprint are printed.
+
     evaluation_folder = pjoin(args.experiment, "evaluation")
     evaluation_files = os.listdir(evaluation_folder)
     _, nb_parts, _, nb_orderings = map(int, re.findall("part([0-9]+)of([0-9]+)_ordering([0-9]+)of([0-9]+)", evaluation_files[0])[0])

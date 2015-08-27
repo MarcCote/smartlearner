@@ -628,42 +628,88 @@ class DeepConvNADE(Model):
 
         return text[:-1]  # Do not return last \n
 
-    @classmethod
-    def create(cls, loaddir="./", hyperparams_filename="hyperparams", params_filename="params"):
-        hyperparams = load_dict_from_json_file(pjoin(loaddir, hyperparams_filename + ".json"))
+    # @classmethod
+    # def create(cls, loaddir="./", hyperparams_filename="hyperparams", params_filename="params"):
+    #     hyperparams = load_dict_from_json_file(pjoin(loaddir, hyperparams_filename + ".json"))
 
-        hidden_activation = [v for k, v in hyperparams.items() if "activation" in k][0]
-        builder = DeepConvNADEBuilder(image_shape=hyperparams["image_shape"],
-                                      nb_channels=hyperparams["nb_channels"],
-                                      ordering_seed=hyperparams["ordering_seed"],
-                                      consider_mask_as_channel=hyperparams["consider_mask_as_channel"],
-                                      hidden_activation=hidden_activation)
+    #     hidden_activation = [v for k, v in hyperparams.items() if "activation" in k][0]
+    #     builder = DeepConvNADEBuilder(image_shape=hyperparams["image_shape"],
+    #                                   nb_channels=hyperparams["nb_channels"],
+    #                                   ordering_seed=hyperparams["ordering_seed"],
+    #                                   consider_mask_as_channel=hyperparams["consider_mask_as_channel"],
+    #                                   hidden_activation=hidden_activation)
 
-        # Rebuild convnet layers
-        layers_id = set()
-        for k, v in hyperparams.items():
-            if k.startswith("convnet_layer"):
-                layer_id = int(re.findall("convnet_layer([0-9]+)_", k)[0])
-                layers_id.add(layer_id)
+    #     # Rebuild convnet layers
+    #     layers_id = set()
+    #     for k, v in hyperparams.items():
+    #         if k.startswith("convnet_layer"):
+    #             layer_id = int(re.findall("convnet_layer([0-9]+)_", k)[0])
+    #             layers_id.add(layer_id)
 
-        convnet_blueprint = ""
-        for layer_id in sorted(layers_id):
-            border_mode = hyperparams["convnet_layer{}_border_mode".format(layer_id)]
-            nb_filters = hyperparams["convnet_layer{}_nb_filters".format(layer_id)]
-            filter_shape = tuple(hyperparams["convnet_layer{}_filter_shape".format(layer_id)])
-            convnet_blueprint += ""
+    #     convnet_blueprint = ""
+    #     for layer_id in sorted(layers_id):
+    #         border_mode = hyperparams["convnet_layer{}_border_mode".format(layer_id)]
+    #         nb_filters = hyperparams["convnet_layer{}_nb_filters".format(layer_id)]
+    #         filter_shape = tuple(hyperparams["convnet_layer{}_filter_shape".format(layer_id)])
+    #         convnet_blueprint += ""
 
-        # Rebuild fullnet layers
+    #     # Rebuild fullnet layers
 
-        if args.convnet_blueprint is not None:
-            builder.build_convnet_from_blueprint(convnet_blueprint)
+    #     if args.convnet_blueprint is not None:
+    #         builder.build_convnet_from_blueprint(convnet_blueprint)
 
-        if args.fullnet_blueprint is not None:
-            builder.build_fullnet_from_blueprint(args.fullnet_blueprint)
+    #     if args.fullnet_blueprint is not None:
+    #         builder.build_fullnet_from_blueprint(args.fullnet_blueprint)
 
-        model = builder.build()
-        model.load(loaddir, params_filename)
-        return model
+    #     model = builder.build()
+    #     model.load(loaddir, params_filename)
+    #     return model
+
+    def build_sampling_function(self, seed=None):
+        from smartpy.misc.utils import Timer
+        from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+        rng = np.random.RandomState(seed)
+        theano_rng = RandomStreams(rng.randint(2**30))
+
+        # Build theano function
+        # $X$: batch of inputs (flatten images)
+        input = T.matrix('input')
+        # $o_d$: index of d-th dimension in the ordering.
+        mask_o_d = T.vector('mask_o_d')
+        # $o_{<d}$: indices of the d-1 first dimensions in the ordering.
+        mask_o_lt_d = T.vector('mask_o_lt_d')
+
+        output = self.fprop(input, mask_o_lt_d)
+        probs = T.sum(output*mask_o_d, axis=1)
+        bits = theano_rng.binomial(p=probs, size=probs.shape, n=1, dtype=theano.config.floatX)
+        sample_bit_plus = theano.function([input, mask_o_d, mask_o_lt_d], [bits, probs])
+
+        def _sample(nb_samples, ordering_seed=1234):
+            rng = np.random.RandomState(ordering_seed)
+            D = int(np.prod(self.image_shape))
+            ordering = np.arange(D)
+            rng.shuffle(ordering)
+
+            with Timer("Generating {} samples from ConvDeepNADE".format(nb_samples)):
+                o_d = np.zeros((D, D), dtype=theano.config.floatX)
+                o_d[np.arange(D), ordering] = 1
+
+                o_lt_d = np.cumsum(o_d, axis=0)
+                o_lt_d[1:] = o_lt_d[:-1]
+                o_lt_d[0, :] = 0
+
+                samples = np.zeros((nb_samples, D), dtype="float32")
+                samples_probs = np.zeros((nb_samples, D), dtype="float32")
+                for d, bit in enumerate(ordering):
+                    if d % 100 == 0:
+                        print d
+                    bits, probs = sample_bit_plus(samples, o_d[d], o_lt_d[d])
+                    samples[:, bit] = bits
+                    samples_probs[:, bit] = probs
+
+                return samples_probs
+
+        return _sample
 
 
 class DeepConvNADEBuilder(object):
@@ -782,6 +828,54 @@ class DeepNadeOrderingTask(Task):
         d = self.rng.randint(self.D, size=(self.batch_size, 1))
         masks_o_lt_d = np.arange(self.D) < d
         map(self.rng.shuffle, masks_o_lt_d)  # Inplace shuffling each row.
+        self.ordering_mask.set_value(masks_o_lt_d)
+
+    def save(self, savedir="./"):
+        filename = pjoin(savedir, "DeepNadeOrderingTask.pkl")
+        pickle.dump(self.rng, open(filename, 'w'))
+
+    def load(self, loaddir="./"):
+        filename = pjoin(loaddir, "DeepNadeOrderingTask.pkl")
+        self.rng = pickle.load(open(filename))
+
+
+class DeepNadeTrivialOrderingsTask(Task):
+    """ This task changes the ordering before each update.
+
+    The ordering are sampled from the 8 trivial orderings.
+    """
+    def __init__(self, image_shape, batch_size, ordering_seed=1234):
+        super(DeepNadeTrivialOrderingsTask, self).__init__()
+        self.rng = np.random.RandomState(ordering_seed)
+        self.batch_size = batch_size
+        self.D = int(np.prod(image_shape))
+        self.ordering_mask = theano.shared(np.zeros((batch_size, self.D), dtype=theano.config.floatX), name='ordering_mask', borrow=False)
+
+        self.orderings = []
+        base_ordering = np.arange(self.D).reshape(image_shape)
+        # 8 trivial orderings
+        # Top-left to bottom-right (row-major)
+        self.orderings.append(base_ordering.flatten("C"))
+        # Top-right to bottom-left (row-major)
+        self.orderings.append(base_ordering[:, ::-1].flatten("C"))
+        # Bottom-left to top-right (row-major)
+        self.orderings.append(base_ordering[::-1, :].flatten("C"))
+        # Bottom-right to top-left (row-major)
+        self.orderings.append(base_ordering[::-1, ::-1].flatten("C"))
+        # Top-left to bottom-right (column-major)
+        self.orderings.append(base_ordering.flatten("F"))
+        # Top-right to bottom-left (column-major)
+        self.orderings.append(base_ordering[:, ::-1].flatten("F"))
+        # Bottom-left to top-right (column-major)
+        self.orderings.append(base_ordering[::-1, :].flatten("F"))
+        # Bottom-right to top-left (column-major)
+        self.orderings.append(base_ordering[::-1, ::-1].flatten("F"))
+
+    def pre_update(self, status):
+        # Compute the next $o_{<d}$ mask.
+        idx_ordering = self.rng.randint(8)
+        d = self.rng.randint(self.D, size=(self.batch_size, 1))
+        masks_o_lt_d = self.orderings[idx_ordering] < d
         self.ordering_mask.set_value(masks_o_lt_d)
 
     def save(self, savedir="./"):

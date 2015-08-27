@@ -30,7 +30,7 @@ from smartpy.trainers import tasks
 
 from smartpy.models.convolutional_deepnade import DeepConvNADEBuilder
 
-from smartpy.models.convolutional_deepnade import DeepNadeOrderingTask
+from smartpy.models.convolutional_deepnade import DeepNadeOrderingTask, DeepNadeTrivialOrderingsTask
 from smartpy.models.convolutional_deepnade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
 
 
@@ -110,6 +110,7 @@ def build_launch_experiment_argsparser(subparser):
     model.add_argument('--blueprint_seed', type=int, help='seed used to generate random blueprints.')
     model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
     model.add_argument('--consider_mask_as_channel', action='store_true', help='consider the ordering mask as a another channel in the convolutional layer.')
+    model.add_argument('--use_trivial_orderings', action='store_true', help='sample orderings from the 8 trivial orderings.')
 
     model.add_argument('--hidden_activation', type=str, help="Activation functions: {}".format(ACTIVATION_FUNCTIONS.keys()), choices=ACTIVATION_FUNCTIONS.keys(), default=ACTIVATION_FUNCTIONS.keys()[0])
     model.add_argument('--weights_initialization', type=str, help='which type of initialization to use when creating weights [{0}].'.format(", ".join(WEIGHTS_INITIALIZERS)), default=WEIGHTS_INITIALIZERS[0], choices=WEIGHTS_INITIALIZERS)
@@ -244,7 +245,11 @@ def main():
     print model
 
     with utils.Timer("Building optimizer"):
-        ordering_task = DeepNadeOrderingTask(int(np.prod(model.image_shape)), args.batch_size, model.ordering_seed)
+        if args.use_trivial_orderings:
+            ordering_task = DeepNadeTrivialOrderingsTask(model.image_shape, args.batch_size, model.ordering_seed)
+        else:
+            ordering_task = DeepNadeOrderingTask(int(np.prod(model.image_shape)), args.batch_size, model.ordering_seed)
+
         loss = lambda input: model.mean_nll_estimate_loss(input, ordering_task.ordering_mask)
 
         optimizer = optimizers.factory(args.optimizer, loss=loss, **vars(args))
