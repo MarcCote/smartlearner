@@ -849,7 +849,9 @@ class DeepNadeTrivialOrderingsTask(Task):
         self.rng = np.random.RandomState(ordering_seed)
         self.batch_size = batch_size
         self.D = int(np.prod(image_shape))
-        self.ordering_mask = theano.shared(np.zeros((batch_size, self.D), dtype=theano.config.floatX), name='ordering_mask', borrow=False)
+        self.mask_o_d = theano.shared(np.zeros((batch_size, self.D), dtype=theano.config.floatX), name='mask_o_d', borrow=False)
+        self.mask_o_lt_d = theano.shared(np.zeros((batch_size, self.D), dtype=theano.config.floatX), name='mask_o_lt_d', borrow=False)
+        self.ordering_mask = self.mask_o_lt_d
 
         self.orderings = []
         base_ordering = np.arange(self.D).reshape(image_shape)
@@ -875,8 +877,10 @@ class DeepNadeTrivialOrderingsTask(Task):
         # Compute the next $o_{<d}$ mask.
         idx_ordering = self.rng.randint(8)
         d = self.rng.randint(self.D, size=(self.batch_size, 1))
+        masks_o_d = self.orderings[idx_ordering] == d
         masks_o_lt_d = self.orderings[idx_ordering] < d
-        self.ordering_mask.set_value(masks_o_lt_d)
+        self.mask_o_d.set_value(masks_o_d)
+        self.mask_o_lt_d.set_value(masks_o_lt_d)
 
     def save(self, savedir="./"):
         filename = pjoin(savedir, "DeepNadeOrderingTask.pkl")

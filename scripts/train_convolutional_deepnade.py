@@ -11,6 +11,7 @@ from os.path import join as pjoin
 
 import argparse
 import datetime
+import theano.tensor as T
 
 import pickle
 import numpy as np
@@ -110,7 +111,7 @@ def build_launch_experiment_argsparser(subparser):
     model.add_argument('--blueprint_seed', type=int, help='seed used to generate random blueprints.')
     model.add_argument('--ordering_seed', type=int, help='seed used to generate new ordering. Default=1234', default=1234)
     model.add_argument('--consider_mask_as_channel', action='store_true', help='consider the ordering mask as a another channel in the convolutional layer.')
-    model.add_argument('--use_trivial_orderings', action='store_true', help='sample orderings from the 8 trivial orderings.')
+    #model.add_argument('--finetune_on_trivial_orderings', action='store_true', help='finetune model using the 8 trivial orderings.')
 
     model.add_argument('--hidden_activation', type=str, help="Activation functions: {}".format(ACTIVATION_FUNCTIONS.keys()), choices=ACTIVATION_FUNCTIONS.keys(), default=ACTIVATION_FUNCTIONS.keys()[0])
     model.add_argument('--weights_initialization', type=str, help='which type of initialization to use when creating weights [{0}].'.format(", ".join(WEIGHTS_INITIALIZERS)), default=WEIGHTS_INITIALIZERS[0], choices=WEIGHTS_INITIALIZERS)
@@ -144,6 +145,12 @@ def build_resume_experiment_argsparser(subparser):
     p.add_argument(dest='experiment', type=str, help="experiment's directory")
 
 
+def build_finetune_experiment_argsparser(subparser):
+    DESCRIPTION = 'Finetune a model using the 8 trivial orderings.'
+    p = subparser.add_parser("finetune", description=DESCRIPTION, help=DESCRIPTION)
+    p.add_argument(dest='experiment', type=str, help="experiment's directory")
+
+
 def buildArgsParser():
     DESCRIPTION = "Script to launch/resume unsupervised experiment using Theano."
     p = argparse.ArgumentParser(description=DESCRIPTION, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -160,6 +167,7 @@ def buildArgsParser():
     subparser = p.add_subparsers(title="subcommands", metavar="", dest="subcommand")
     build_launch_experiment_argsparser(subparser)
     build_resume_experiment_argsparser(subparser)
+    build_finetune_experiment_argsparser(subparser)
     return p
 
 
@@ -207,6 +215,18 @@ def main():
 
         args.subcommand = "resume"
 
+    elif args.subcommand == "finetune":
+        if not os.path.isdir(args.experiment):
+            parser.error("Cannot find specified experiment folder: '{}'".format(args.experiment))
+
+        # Load command to resume
+        data_dir = args.experiment
+        launch_command = pickle.load(open(pjoin(args.experiment, "command.pkl")))
+        command_to_resume = sys.argv[1:sys.argv.index('finetune')] + launch_command
+        args = parser.parse_args(command_to_resume)
+
+        args.subcommand = "finetune"
+
     with utils.Timer("Loading dataset"):
         dataset = Dataset(args.dataset)
 
@@ -245,12 +265,12 @@ def main():
     print model
 
     with utils.Timer("Building optimizer"):
-        if args.use_trivial_orderings:
+        if args.subcommand == "finetune":
             ordering_task = DeepNadeTrivialOrderingsTask(model.image_shape, args.batch_size, model.ordering_seed)
+            loss = lambda input: T.mean(model.lnp_x_o_d_given_x_o_lt_d(input, ordering_task.mask_o_d, ordering_task.mask_o_lt_d))
         else:
             ordering_task = DeepNadeOrderingTask(int(np.prod(model.image_shape)), args.batch_size, model.ordering_seed)
-
-        loss = lambda input: model.mean_nll_estimate_loss(input, ordering_task.ordering_mask)
+            loss = lambda input: model.mean_nll_estimate_loss(input, ordering_task.ordering_mask)
 
         optimizer = optimizers.factory(args.optimizer, loss=loss, **vars(args))
         optimizer.add_update_rule(*args.update_rules)
@@ -278,7 +298,7 @@ def main():
         if args.lookahead is not None:
             print "Will train Convoluational Deep NADE using early stopping with a lookahead of {0} epochs.".format(args.lookahead)
             save_task = tasks.SaveTraining(trainer, savedir=data_dir)
-            early_stopping = tasks.EarlyStopping(nll_valid.mean, args.lookahead, save_task, eps=args.lookahead_eps)
+            early_stopping = tasks.EarlyStopping(nll_valid.mean, args.lookahead, save_task, eps=args.lookahead_eps, skip_epoch0=True)
             trainer.add_stopping_criterion(early_stopping)
             trainer.add_task(early_stopping)
 
@@ -287,9 +307,14 @@ def main():
             save_task = tasks.SaveTraining(trainer, savedir=data_dir, each_epoch=args.save_frequency)
             trainer.add_task(save_task)
 
-        if args.subcommand == "resume":
+        if args.subcommand == "resume" or args.subcommand == "finetune":
             print "Loading existing trainer..."
             trainer.load(data_dir)
+
+        if args.subcommand == "finetune":
+            trainer.status.extra['best_epoch'] = trainer.status.current_epoch
+
+        trainer._build_learn()
 
     if not args.no_train:
         with utils.Timer("Training"):

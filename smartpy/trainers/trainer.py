@@ -26,6 +26,7 @@ class Trainer(Thread):
         self.tasks = []
 
         self.updates = OrderedDict()
+        self._learn = None
 
     def add_stopping_criterion(self, criterion):
         self.stopping_criteria.append(criterion)
@@ -84,8 +85,13 @@ class Trainer(Thread):
         for task in self.tasks:
             task.load(tasks_dir)
 
+    def _build_learn(self):
+        self._learn = self.optimizer.build_learning_function(extra_updates=self.updates)
+
     def run(self):
-        learn = self.optimizer.build_learning_function(extra_updates=self.updates)
+        if self._learn is None:
+            self._build_learn()
+        #learn = self.optimizer.build_learning_function(extra_updates=self.updates)
         #theano.printing.pydotprint(learn, '{0}_learn_{1}'.format(self.model.__class__.__name__, theano.config.device), with_ids=True)
 
         # Only do init if not resuming
@@ -103,7 +109,7 @@ class Trainer(Thread):
                 self.status.relative_update = no_update
                 self.status.current_update += 1
                 self._pre_update()
-                learn(no_update-1)
+                self._learn(no_update-1)
                 self._post_update()
 
             self.status.training_time += time() - starttime
