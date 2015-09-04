@@ -891,6 +891,55 @@ class DeepNadeTrivialOrderingsTask(Task):
         self.rng = pickle.load(open(filename))
 
 
+class EvaluateDeepNadeNLLEstimateOnTrivial(Evaluate):
+    """ This tasks compute the mean/stderr NLL estimate for a Deep NADE model.  """
+    def __init__(self, conv_nade, dataset, batch_size=None, ordering_seed=1234):
+
+        dataset_shared = dataset
+        if isinstance(dataset, np.ndarray):
+            dataset_shared = theano.shared(dataset, name='dataset', borrow=True)
+
+        if batch_size is None:
+            batch_size = len(dataset_shared.get_value())
+
+        nb_batches = int(np.ceil(len(dataset_shared.get_value()) / batch_size))
+
+        # Pre-generate the orderings that will be used to estimate the NLL of the Deep NADE model.
+        D = int(np.prod(conv_nade.image_shape))
+        ordering_task = DeepNadeTrivialOrderingsTask(conv_nade.image_shape, len(dataset_shared.get_value()), ordering_seed)
+
+        # $X$: batch of inputs (flatten images)
+        input = T.matrix('input')
+        mask_o_d = theano.shared(np.zeros((batch_size, D), dtype=theano.config.floatX), name='mask_o_d', borrow=False)
+        mask_o_lt_d = theano.shared(np.zeros((batch_size, D), dtype=theano.config.floatX), name='mask_o_lt_d', borrow=False)
+        loss = T.mean(-conv_nade.lnp_x_o_d_given_x_o_lt_d(input, mask_o_d, mask_o_lt_d))
+
+        no_batch = T.iscalar('no_batch')
+        givens = {input: dataset[no_batch * batch_size:(no_batch + 1) * batch_size]}
+        compute_loss = theano.function([no_batch], loss, givens=givens, name="NLL Estimate")
+        #theano.printing.pydotprint(compute_loss, '{0}_compute_nll_{1}'.format(conv_nade.__class__.__name__, theano.config.device), with_ids=True)
+
+        def _nll_mean_and_std():
+            nlls = np.zeros(len(dataset_shared.get_value()))
+            for i in range(nb_batches):
+                # Hack: Change ordering mask in the model before computing the NLL estimate.
+                mask_o_d.set_value(ordering_task.mask_o_d.get_value()[i*batch_size:(i+1)*batch_size])
+                mask_o_lt_d.set_value(ordering_task.mask_o_lt_d.get_value()[i*batch_size:(i+1)*batch_size])
+                nlls[i*batch_size:(i+1)*batch_size] = compute_loss(i)
+
+            return round(nlls.mean(), 6), round(nlls.std() / np.sqrt(nlls.shape[0]), 6)
+
+        super(EvaluateDeepNadeNLLEstimateOnTrivial, self).__init__(_nll_mean_and_std)
+
+    @property
+    def mean(self):
+        return ItemGetter(self, attribute=0)
+
+    @property
+    def std(self):
+        return ItemGetter(self, attribute=1)
+
+
 class EvaluateDeepNadeNLLEstimate(Evaluate):
     """ This tasks compute the mean/stderr NLL estimate for a Deep NADE model.  """
     def __init__(self, conv_nade, dataset, ordering_mask, batch_size=None, ordering_seed=1234):

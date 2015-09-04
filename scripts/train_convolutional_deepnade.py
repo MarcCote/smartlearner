@@ -33,6 +33,7 @@ from smartpy.models.convolutional_deepnade import DeepConvNADEBuilder
 
 from smartpy.models.convolutional_deepnade import DeepNadeOrderingTask, DeepNadeTrivialOrderingsTask
 from smartpy.models.convolutional_deepnade import EvaluateDeepNadeNLL, EvaluateDeepNadeNLLEstimate
+from smartpy.models.convolutional_deepnade import EvaluateDeepNadeNLLEstimateOnTrivial
 
 
 DATASETS = ['binarized_mnist']
@@ -285,7 +286,11 @@ def main():
         trainer.add_task(tasks.PrintEpochDuration())
         trainer.add_task(tasks.AverageObjective(trainer))
 
-        nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+        if args.subcommand == "finetune":
+            nll_valid = EvaluateDeepNadeNLLEstimateOnTrivial(model, dataset.validset_shared, batch_size=args.batch_size)
+        else:
+            nll_valid = EvaluateDeepNadeNLLEstimate(model, dataset.validset_shared, ordering_task.ordering_mask, batch_size=args.batch_size)
+
         trainer.add_task(tasks.Print(nll_valid.mean, msg="Average NLL estimate on the validset: {0}"))
 
         # Add stopping criteria
