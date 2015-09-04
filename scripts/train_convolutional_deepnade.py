@@ -267,8 +267,7 @@ def main():
     with utils.Timer("Building optimizer"):
         if args.subcommand == "finetune":
             ordering_task = DeepNadeTrivialOrderingsTask(model.image_shape, args.batch_size, model.ordering_seed)
-            nll_o_d = -model.lnp_x_o_d_given_x_o_lt_d(input, ordering_task.mask_o_d, ordering_task.mask_o_lt_d)
-            loss = lambda input: T.mean(nll_o_d)
+            loss = lambda input: T.mean(-model.lnp_x_o_d_given_x_o_lt_d(input, ordering_task.mask_o_d, ordering_task.mask_o_lt_d))
         else:
             ordering_task = DeepNadeOrderingTask(int(np.prod(model.image_shape)), args.batch_size, model.ordering_seed)
             loss = lambda input: model.mean_nll_estimate_loss(input, ordering_task.ordering_mask)
