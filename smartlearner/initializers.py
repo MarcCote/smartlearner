@@ -3,6 +3,7 @@ import theano
 
 floatX = theano.config.floatX
 
+
 class WeightInitializer:
     def __init__(self, random_seed=None):
         self.rng = np.random.mtrand.RandomState(random_seed)
@@ -17,7 +18,15 @@ class WeightInitializer:
 
     @staticmethod
     def _init_range(dim):
-        return np.sqrt(6. / sum(dim))
+        if len(dim) == 2:
+            return np.sqrt(6. / (dim[0] + dim[1]))
+        elif len(dim) == 4:
+            # For convnet (see http://deeplearning.net/tutorial/lenet.html)
+            fan_in = np.prod(dim[1:])
+            fan_out = dim[0] * np.prod(dim[2:])
+            return np.sqrt(6. / (fan_in + fan_out))
+        else:
+            raise ValueError("Don't know what to do in this case!")
 
 
 class UniformInitializer(WeightInitializer):
