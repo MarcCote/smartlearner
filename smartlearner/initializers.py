@@ -41,7 +41,8 @@ class OrthogonalInitializer(WeightInitializer):
         max_dim = max(dim)
         uniform_initer = UniformInitializer()
         uniform_initer.rng = self.rng
-        return np.asarray(np.linalg.svd(uniform_initer((max_dim, max_dim)))[2][:dim[0], :dim[1]], dtype=floatX)
+        data = uniform_initer._generate_array((max_dim, max_dim))
+        return np.asarray(np.linalg.svd(data)[2][:dim[0], :dim[1]], dtype=floatX)
 
 
 class GaussienInitializer(WeightInitializer):
