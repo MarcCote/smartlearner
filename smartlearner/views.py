@@ -42,7 +42,9 @@ class LossView(View):
             losses.append(self.compute_loss())
 
         losses = np.concatenate(losses)
-        return losses, float(losses.mean()), float(losses.std(ddof=1) / np.sqrt(len(losses)))
+        return (losses,
+                float(losses.mean()), float(losses.std(ddof=1) / np.sqrt(len(losses))),
+                float(losses.sum()))
 
     @property
     def losses(self):
@@ -55,6 +57,10 @@ class LossView(View):
     @property
     def stderror(self):
         return ItemGetter(self, attribute=2)
+
+    @property
+    def sum(self):
+        return ItemGetter(self, attribute=3)
 
 
 class MonitorVariable(View):
