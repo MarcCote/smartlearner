@@ -1,3 +1,4 @@
+import numpy as np
 from time import time
 from os.path import join as pjoin
 
@@ -62,7 +63,13 @@ class Print(RecurrentTask):
             self.updates.update(view.updates)
 
     def execute(self, status):
-        values = [view.view(status) for view in self.views]
+        def _to_float(v):
+            if isinstance(v, np.ndarray) and v.ndim == 0:
+                return float(v)
+
+            return v
+
+        values = [_to_float(view.view(status)) for view in self.views]
         if self._p_epoch:
             print(status.current_epoch, end=':')
         if self._p_update:
@@ -137,6 +144,15 @@ class Logger(RecurrentTask):
 
     def _get_variable_history(self, index):
         return self._history[index]
+
+    def save(self, path):
+        state = {"version": 1,
+                 "history": self._history}
+        utils.save_dict_to_json_file(pjoin(path, type(self).__name__ + ".json"), state)
+
+    def load(self, path):
+        state = utils.load_dict_from_json_file(pjoin(path, type(self).__name__ + ".json"))
+        self._history = state["history"]
 
 
 class Accumulator(Logger):
